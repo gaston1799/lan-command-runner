@@ -1,0 +1,20 @@
+{
+  "name": "lan-command-runner",
+  "version": "0.1.0",
+  "description": "Token-authenticated LAN command runner for machines you administer.",
+  "type": "commonjs",
+  "bin": {
+    "lcr": "./bin/lcr.js",
+    "lan-command-runner": "./bin/lcr.js"
+  },
+  "scripts": {
+    "smoke": "node scripts/smoke.js"
+  },
+  "keywords": [
+    "lan",
+    "remote-admin",
+    "command-runner",
+    "cli"
+  ],
+  "license": "MIT"
+}
