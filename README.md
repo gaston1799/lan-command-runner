@@ -34,6 +34,24 @@ npm link
 
 This adds `lcr` to PATH.
 
+## Install From Latest Release
+
+Run this in PowerShell:
+
+```powershell
+iwr -UseB https://github.com/gaston1799/lan-command-runner/releases/latest/download/install.ps1 | iex
+```
+
+The installer downloads the latest tagged release source to `%LOCALAPPDATA%\lan-command-runner`, runs `npm install --omit=dev`, and links `lcr` onto PATH with `npm link`.
+
+Optional overrides:
+
+```powershell
+$env:LCR_INSTALL_ROOT = 'D:\tools\lan-command-runner'
+$env:LCR_VERSION = 'v0.1.0'
+iwr -UseB https://github.com/gaston1799/lan-command-runner/releases/latest/download/install.ps1 | iex
+```
+
 ## Broker / Agent Mode
 
 Broker mode is the best fit when you want machines to connect outbound and then target them by ID:
