@@ -8,7 +8,7 @@
     "lan-command-runner": "./bin/lcr.js"
   },
   "scripts": {
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js && node scripts/broker-smoke.js"
   },
   "keywords": [
     "lan",

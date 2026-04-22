@@ -2,6 +2,8 @@
 /* eslint-disable no-console */
 
 const { parseArgs, numberOption } = require("../lib/args");
+const { agent } = require("../lib/agent");
+const { broker } = require("../lib/broker");
 const { defaultUrl, health, runRemote } = require("../lib/client");
 const { DEFAULT_PORT } = require("../lib/protocol");
 const { generateToken, serve } = require("../lib/server");
@@ -12,6 +14,13 @@ lan-command-runner
 
 Usage:
   lcr token
+  lcr broker --token <token> [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
+  lcr agent --url http://broker:${DEFAULT_PORT} --token <token> [--name <name>] [--id <agent-id>]
+  lcr agents [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr exec <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
+  lcr sh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<command string>"
+
+Direct mode:
   lcr serve --token <token> [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
   lcr health [--url http://host:${DEFAULT_PORT}]
   lcr run [--url http://host:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
@@ -25,6 +34,7 @@ Environment:
 
 Notes:
   - The server defaults to 127.0.0.1. Use --host 0.0.0.0 only on a trusted LAN.
+  - Broker mode lets machines connect outbound and receive an agent id.
   - Token auth is mandatory for /run.
   - Use 'run' for argv-safe commands and 'shell' only when shell syntax is required.
 `.trim());
@@ -65,6 +75,25 @@ async function main() {
     return;
   }
 
+  if (command === "broker") {
+    broker({
+      host: options.host,
+      port: options.port,
+      token: options.token,
+    });
+    return;
+  }
+
+  if (command === "agent") {
+    await agent({
+      url: options.url || defaultUrl(),
+      token: options.token,
+      name: options.name,
+      id: options.id,
+    });
+    return;
+  }
+
   if (command === "health") {
     const result = await health({ url: options.url || defaultUrl() });
     console.log(JSON.stringify(result, null, 2));
@@ -81,6 +110,68 @@ async function main() {
       timeoutMs: numberOption(options["timeout-ms"], undefined),
     });
     printResult(result);
+    return;
+  }
+
+  if (command === "agents") {
+    const result = await fetch(new URL("/agents", options.url || defaultUrl()).toString(), {
+      headers: { authorization: `Bearer ${options.token || process.env.LCR_TOKEN || ""}` },
+    });
+    const payload = await result.json();
+    if (!result.ok) throw new Error(payload.error || `HTTP ${result.status}`);
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  if (command === "exec") {
+    const agentId = options._.shift();
+    if (!agentId) throw new Error("Missing agent id.");
+    if (!options._.length) throw new Error("Missing command after --.");
+    const token = options.token || process.env.LCR_TOKEN;
+    if (!token) throw new Error("Missing token. Pass --token or set LCR_TOKEN.");
+    const result = await fetch(new URL(`/agents/${encodeURIComponent(agentId)}/run`, options.url || defaultUrl()).toString(), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: options._,
+        cwd: options.cwd,
+        timeoutMs: numberOption(options["timeout-ms"], undefined),
+        waitMs: numberOption(options["wait-ms"], undefined),
+      }),
+    });
+    const payload = await result.json();
+    if (!result.ok) throw new Error(payload.error || `HTTP ${result.status}`);
+    printResult(payload);
+    return;
+  }
+
+  if (command === "sh") {
+    const agentId = options._.shift();
+    const source = options._.join(" ").trim();
+    if (!agentId) throw new Error("Missing agent id.");
+    if (!source) throw new Error("Missing shell command string.");
+    const token = options.token || process.env.LCR_TOKEN;
+    if (!token) throw new Error("Missing token. Pass --token or set LCR_TOKEN.");
+    const result = await fetch(new URL(`/agents/${encodeURIComponent(agentId)}/run`, options.url || defaultUrl()).toString(), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: source,
+        shell: true,
+        cwd: options.cwd,
+        timeoutMs: numberOption(options["timeout-ms"], undefined),
+        waitMs: numberOption(options["wait-ms"], undefined),
+      }),
+    });
+    const payload = await result.json();
+    if (!result.ok) throw new Error(payload.error || `HTTP ${result.status}`);
+    printResult(payload);
     return;
   }
 

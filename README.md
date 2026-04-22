@@ -2,10 +2,11 @@
 
 Token-authenticated LAN command runner for machines you administer.
 
-It gives you:
+It gives you two modes:
 
-- a small server agent (`lcr serve`) to run on the target LAN machine
-- a client command (`lcr run` / `lcr shell`) to run from your terminal
+- broker/agent mode: one LAN broker, many outbound agents, command by agent id
+- direct mode: a small server (`lcr serve`) directly on one target machine
+- client commands that return stdout/stderr/exit code
 - stdout/stderr/exit-code forwarding
 - mandatory bearer-token auth for command execution
 
@@ -33,7 +34,15 @@ npm link
 
 This adds `lcr` to PATH.
 
-## Start The Agent On The Target Machine
+## Broker / Agent Mode
+
+Broker mode is the best fit when you want machines to connect outbound and then target them by ID:
+
+```text
+lcr exec <agent-id> -- <command> [args...]
+```
+
+Start the broker on the LAN host:
 
 Generate a token:
 
@@ -41,21 +50,44 @@ Generate a token:
 lcr token
 ```
 
-Start locally only:
-
 ```powershell
 $env:LCR_TOKEN = '<paste-token-here>'
-lcr serve
+lcr broker --host 0.0.0.0 --port 8765
 ```
 
-Expose to trusted LAN:
+Start an agent on another machine:
+
+```powershell
+$env:LCR_TOKEN = '<same-token>'
+lcr agent --url http://192.168.1.50:8765 --name gaming-pc
+```
+
+List connected agents:
+
+```powershell
+$env:LCR_URL = 'http://192.168.1.50:8765'
+$env:LCR_TOKEN = '<same-token>'
+lcr agents
+```
+
+Run commands by agent id:
+
+```powershell
+lcr exec agent-1234abcd -- hostname
+lcr exec agent-1234abcd -- node --version
+lcr sh agent-1234abcd 'whoami; hostname'
+```
+
+The broker prints LAN health URLs. You may need to allow the broker port through Windows Firewall.
+
+## Direct Mode
+
+Direct mode runs a command server on the target itself. It is simpler, but every target needs an inbound reachable port.
 
 ```powershell
 $env:LCR_TOKEN = '<paste-token-here>'
 lcr serve --host 0.0.0.0 --port 8765
 ```
-
-The server prints LAN health URLs. You may need to allow the port through Windows Firewall on the target machine.
 
 ## Run Commands From Another Machine
 
