@@ -73,6 +73,9 @@ async function main() {
     if (cat.code !== 0) throw new Error(cat.stderr || `lcr cat exited ${cat.code}`);
     if (cat.stdout !== "hello-file") throw new Error(`Unexpected cat stdout: ${cat.stdout}`);
 
+    const disconnect = await runNode(["bin/lcr.js", "disconnect", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token]);
+    if (disconnect.code !== 0) throw new Error(disconnect.stderr || `lcr disconnect exited ${disconnect.code}`);
+
     console.log("broker smoke ok");
   } finally {
     if (agent) agent.kill();

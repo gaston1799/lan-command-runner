@@ -105,6 +105,15 @@ lcr cat agent-1234abcd C:\remote\file.txt
 'hello from stdin' | lcr write agent-1234abcd C:\remote\hello.txt --stdin
 ```
 
+Agent lifecycle commands:
+
+```powershell
+lcr disconnect agent-1234abcd
+lcr update-agent agent-1234abcd
+```
+
+`update-agent` tells a Windows agent to disconnect, run the latest release installer, and reconnect to the same broker with the same agent id. Use it after publishing a new release when you want existing agents to upgrade themselves.
+
 The broker prints LAN health URLs. You may need to allow the broker port through Windows Firewall.
 
 ## Direct Mode
@@ -200,6 +209,8 @@ Broker file transfer uses agent jobs over:
 ```http
 POST /agents/:id/file/read
 POST /agents/:id/file/write
+POST /agents/:id/disconnect
+POST /agents/:id/update
 ```
 
 File payloads are base64 encoded JSON for portability.

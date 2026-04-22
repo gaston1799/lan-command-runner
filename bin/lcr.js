@@ -25,6 +25,8 @@ Usage:
   lcr put <agent-id> <local-path> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr cat <agent-id> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr write <agent-id> <remote-path> --stdin [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr disconnect <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr update-agent <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
 
 Direct mode:
   lcr serve --token <token> [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
@@ -257,6 +259,26 @@ async function main() {
       waitMs: numberOption(options["wait-ms"], undefined),
     });
     printFileWriteResult(result);
+    return;
+  }
+
+  if (command === "disconnect") {
+    const [agentId] = options._;
+    if (!agentId) throw new Error("Usage: lcr disconnect <agent-id>");
+    const result = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/disconnect`, {
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    printResult(result);
+    return;
+  }
+
+  if (command === "update-agent") {
+    const [agentId] = options._;
+    if (!agentId) throw new Error("Usage: lcr update-agent <agent-id>");
+    const result = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/update`, {
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    printResult(result);
     return;
   }
 
