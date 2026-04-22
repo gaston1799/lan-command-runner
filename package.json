@@ -1,6 +1,6 @@
 {
   "name": "lan-command-runner",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Token-authenticated LAN command runner for machines you administer.",
   "type": "commonjs",
   "bin": {
