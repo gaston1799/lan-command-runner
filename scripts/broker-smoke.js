@@ -54,7 +54,7 @@ async function waitForAgent() {
 }
 
 async function main() {
-  const broker = spawnNode(["bin/lcr.js", "broker", "--port", String(port), "--token", token]);
+  let broker = spawnNode(["bin/lcr.js", "broker", "--port", String(port), "--token", token]);
   let agent;
 
   try {
@@ -70,6 +70,13 @@ async function main() {
       if (pwsh.code !== 0) throw new Error(pwsh.stderr || `lcr pwsh exited ${pwsh.code}`);
       if (pwsh.stdout.trim() !== "pwsh-ok") throw new Error(`Unexpected pwsh stdout: ${pwsh.stdout}`);
     }
+
+    broker.kill();
+    await new Promise((resolve) => broker.once("close", resolve));
+    broker = spawnNode(["bin/lcr.js", "broker", "--port", String(port), "--token", token]);
+    await waitForHealth();
+    const reregisteredAgentId = await waitForAgent();
+    if (reregisteredAgentId !== agentId) throw new Error(`Agent re-registered as ${reregisteredAgentId}, expected ${agentId}`);
 
     const remotePath = process.platform === "win32" ? `${process.env.TEMP}\\lcr-broker-smoke.txt` : "/tmp/lcr-broker-smoke.txt";
     const write = await runNode(["bin/lcr.js", "write", agentId, remotePath, "--url", `http://127.0.0.1:${port}`, "--token", token, "hello-file"]);
