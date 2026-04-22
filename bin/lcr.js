@@ -19,9 +19,9 @@ Usage:
   lcr broker --token <token> [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
   lcr agent --url http://broker:${DEFAULT_PORT} --token <token> [--name <name>] [--id <agent-id>]
   lcr agents [--url http://broker:${DEFAULT_PORT}] [--token <token>]
-  lcr exec <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
-  lcr sh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<command string>"
-  lcr pwsh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<PowerShell script>"
+  lcr exec <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] [--no-stream] -- <cmd> [args...]
+  lcr sh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] [--no-stream] "<command string>"
+  lcr pwsh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] [--no-stream] "<PowerShell script>"
   lcr get <agent-id> <remote-path> <local-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr put <agent-id> <local-path> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr cat <agent-id> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
@@ -61,7 +61,7 @@ function printResult(result) {
   if (result.code !== 0) {
     console.error(`[lcr] remote exit code: ${result.code}${result.signal ? ` (${result.signal})` : ""}`);
   }
-  process.exit(result.ok ? 0 : result.code || 1);
+  process.exitCode = result.ok ? 0 : result.code || 1;
 }
 
 function authToken(options) {
@@ -84,6 +84,33 @@ async function brokerPost(options, route, payload) {
   return responsePayload;
 }
 
+async function brokerGet(options, route) {
+  const result = await fetch(new URL(route, options.url || defaultUrl()).toString(), {
+    headers: {
+      authorization: `Bearer ${authToken(options)}`,
+    },
+  });
+  const responsePayload = await result.json();
+  if (!result.ok) throw new Error(responsePayload.error || `HTTP ${result.status}`);
+  return responsePayload;
+}
+
+async function streamBrokerJob(options, jobId) {
+  let after = 0;
+
+  while (true) {
+    const payload = await brokerGet(options, `/jobs/${encodeURIComponent(jobId)}/events?after=${after}&waitMs=25000`);
+    for (const event of payload.events || []) {
+      after = Math.max(after, Number(event.seq || 0));
+      if (event.type === "output") {
+        if (event.stream === "stderr") process.stderr.write(event.data || "");
+        else process.stdout.write(event.data || "");
+      }
+      if (event.type === "result") return event.result;
+    }
+  }
+}
+
 function readStdin() {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -101,7 +128,7 @@ function printFileWriteResult(result) {
   console.log(`[lcr] wrote ${result.file?.size ?? 0} byte(s) to ${result.file?.path || "remote file"}`);
 }
 
-const REMOTE_COMMAND_OPTIONS = new Set(["url", "token", "cwd", "timeout-ms", "wait-ms"]);
+const REMOTE_COMMAND_OPTIONS = new Set(["url", "token", "cwd", "timeout-ms", "wait-ms", "no-stream"]);
 
 function parseRemoteCommandArgs(argv, { agentId = false } = {}) {
   const parsed = { _: [] };
@@ -120,6 +147,10 @@ function parseRemoteCommandArgs(argv, { agentId = false } = {}) {
       const key = eq === -1 ? value.slice(2) : value.slice(2, eq);
 
       if (REMOTE_COMMAND_OPTIONS.has(key)) {
+        if (key === "no-stream") {
+          parsed[key] = true;
+          continue;
+        }
         if (eq !== -1) {
           parsed[key] = value.slice(eq + 1);
           continue;
@@ -225,8 +256,9 @@ async function main() {
       cwd: commandOptions.cwd,
       timeoutMs: numberOption(commandOptions["timeout-ms"], undefined),
       waitMs: numberOption(commandOptions["wait-ms"], undefined),
+      stream: !commandOptions["no-stream"],
     });
-    printResult(payload);
+    printResult(payload.stream ? await streamBrokerJob(commandOptions, payload.jobId) : payload);
     return;
   }
 
@@ -241,8 +273,9 @@ async function main() {
       cwd: options.cwd,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
       waitMs: numberOption(options["wait-ms"], undefined),
+      stream: !options["no-stream"],
     });
-    printResult(payload);
+    printResult(payload.stream ? await streamBrokerJob(options, payload.jobId) : payload);
     return;
   }
 
@@ -256,8 +289,9 @@ async function main() {
       cwd: options.cwd,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
       waitMs: numberOption(options["wait-ms"], undefined),
+      stream: !options["no-stream"],
     });
-    printResult(payload);
+    printResult(payload.stream ? await streamBrokerJob(options, payload.jobId) : payload);
     return;
   }
 

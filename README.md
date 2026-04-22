@@ -97,6 +97,8 @@ lcr sh agent-1234abcd 'whoami; hostname'
 lcr pwsh agent-1234abcd 'Get-Process | Select-Object -First 5 Name,Id'
 ```
 
+Broker command output streams by default, so stdout/stderr appears while the remote process is still running. Add `--no-stream` to use the older wait-for-exit response mode.
+
 Transfer files:
 
 ```powershell
