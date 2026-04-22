@@ -45,7 +45,7 @@ async function main() {
 
   try {
     await waitForHealth();
-    const result = await run(process.execPath, ["bin/lcr.js", "run", "--", process.execPath, "--version"]);
+    const result = await run(process.execPath, ["bin/lcr.js", "run", process.execPath, "--version"]);
     if (result.code !== 0) throw new Error(result.stderr || `lcr run exited ${result.code}`);
     if (!/^v\d+\./.test(result.stdout.trim())) throw new Error(`Unexpected stdout: ${result.stdout}`);
     console.log("smoke ok");

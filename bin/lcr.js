@@ -101,6 +101,50 @@ function printFileWriteResult(result) {
   console.log(`[lcr] wrote ${result.file?.size ?? 0} byte(s) to ${result.file?.path || "remote file"}`);
 }
 
+const REMOTE_COMMAND_OPTIONS = new Set(["url", "token", "cwd", "timeout-ms", "wait-ms"]);
+
+function parseRemoteCommandArgs(argv, { agentId = false } = {}) {
+  const parsed = { _: [] };
+  let sawAgentId = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+
+    if (value === "--") {
+      parsed._.push(...argv.slice(index + 1));
+      break;
+    }
+
+    if (value.startsWith("--")) {
+      const eq = value.indexOf("=");
+      const key = eq === -1 ? value.slice(2) : value.slice(2, eq);
+
+      if (REMOTE_COMMAND_OPTIONS.has(key)) {
+        if (eq !== -1) {
+          parsed[key] = value.slice(eq + 1);
+          continue;
+        }
+        const next = argv[index + 1];
+        if (!next) throw new Error(`Missing value for --${key}.`);
+        parsed[key] = next;
+        index += 1;
+        continue;
+      }
+    }
+
+    if (agentId && !sawAgentId) {
+      parsed._.push(value);
+      sawAgentId = true;
+      continue;
+    }
+
+    parsed._.push(value, ...argv.slice(index + 1));
+    break;
+  }
+
+  return parsed;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const command = argv.shift();
@@ -148,13 +192,14 @@ async function main() {
   }
 
   if (command === "run") {
-    if (!options._.length) throw new Error("Missing command after --.");
+    const commandOptions = parseRemoteCommandArgs(argv);
+    if (!commandOptions._.length) throw new Error("Missing command after --.");
     const result = await runRemote({
-      url: options.url || defaultUrl(),
-      token: options.token,
-      command: options._,
-      cwd: options.cwd,
-      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      url: commandOptions.url || defaultUrl(),
+      token: commandOptions.token,
+      command: commandOptions._,
+      cwd: commandOptions.cwd,
+      timeoutMs: numberOption(commandOptions["timeout-ms"], undefined),
     });
     printResult(result);
     return;
@@ -171,14 +216,15 @@ async function main() {
   }
 
   if (command === "exec") {
-    const agentId = options._.shift();
+    const commandOptions = parseRemoteCommandArgs(argv, { agentId: true });
+    const agentId = commandOptions._.shift();
     if (!agentId) throw new Error("Missing agent id.");
-    if (!options._.length) throw new Error("Missing command after --.");
-    const payload = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/run`, {
-      command: options._,
-      cwd: options.cwd,
-      timeoutMs: numberOption(options["timeout-ms"], undefined),
-      waitMs: numberOption(options["wait-ms"], undefined),
+    if (!commandOptions._.length) throw new Error("Missing command after --.");
+    const payload = await brokerPost(commandOptions, `/agents/${encodeURIComponent(agentId)}/run`, {
+      command: commandOptions._,
+      cwd: commandOptions.cwd,
+      timeoutMs: numberOption(commandOptions["timeout-ms"], undefined),
+      waitMs: numberOption(commandOptions["wait-ms"], undefined),
     });
     printResult(payload);
     return;

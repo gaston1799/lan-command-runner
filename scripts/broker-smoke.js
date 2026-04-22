@@ -61,7 +61,7 @@ async function main() {
     await waitForHealth();
     agent = spawnNode(["bin/lcr.js", "agent", "--url", `http://127.0.0.1:${port}`, "--token", token, "--id", "local"]);
     const agentId = await waitForAgent();
-    const result = await runNode(["bin/lcr.js", "exec", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token, "--", process.execPath, "--version"]);
+    const result = await runNode(["bin/lcr.js", "exec", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token, process.execPath, "--version"]);
     if (result.code !== 0) throw new Error(result.stderr || `lcr exec exited ${result.code}`);
     if (!/^v\d+\./.test(result.stdout.trim())) throw new Error(`Unexpected stdout: ${result.stdout}`);
 
