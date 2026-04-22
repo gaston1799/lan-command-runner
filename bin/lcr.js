@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 
+const fs = require("node:fs");
+const path = require("node:path");
 const { parseArgs, numberOption } = require("../lib/args");
 const { agent } = require("../lib/agent");
 const { broker } = require("../lib/broker");
@@ -19,6 +21,10 @@ Usage:
   lcr agents [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr exec <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
   lcr sh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<command string>"
+  lcr get <agent-id> <remote-path> <local-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr put <agent-id> <local-path> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr cat <agent-id> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr write <agent-id> <remote-path> --stdin [--url http://broker:${DEFAULT_PORT}] [--token <token>]
 
 Direct mode:
   lcr serve --token <token> [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
@@ -52,6 +58,43 @@ function printResult(result) {
     console.error(`[lcr] remote exit code: ${result.code}${result.signal ? ` (${result.signal})` : ""}`);
   }
   process.exit(result.ok ? 0 : result.code || 1);
+}
+
+function authToken(options) {
+  const token = options.token || process.env.LCR_TOKEN;
+  if (!token) throw new Error("Missing token. Pass --token or set LCR_TOKEN.");
+  return token;
+}
+
+async function brokerPost(options, route, payload) {
+  const result = await fetch(new URL(route, options.url || defaultUrl()).toString(), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${authToken(options)}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const responsePayload = await result.json();
+  if (!result.ok) throw new Error(responsePayload.error || `HTTP ${result.status}`);
+  return responsePayload;
+}
+
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("end", () => resolve(Buffer.concat(chunks)));
+    process.stdin.on("error", reject);
+  });
+}
+
+function printFileWriteResult(result) {
+  if (!result.ok) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exit(result.code || 1);
+  }
+  console.log(`[lcr] wrote ${result.file?.size ?? 0} byte(s) to ${result.file?.path || "remote file"}`);
 }
 
 async function main() {
@@ -127,23 +170,12 @@ async function main() {
     const agentId = options._.shift();
     if (!agentId) throw new Error("Missing agent id.");
     if (!options._.length) throw new Error("Missing command after --.");
-    const token = options.token || process.env.LCR_TOKEN;
-    if (!token) throw new Error("Missing token. Pass --token or set LCR_TOKEN.");
-    const result = await fetch(new URL(`/agents/${encodeURIComponent(agentId)}/run`, options.url || defaultUrl()).toString(), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        command: options._,
-        cwd: options.cwd,
-        timeoutMs: numberOption(options["timeout-ms"], undefined),
-        waitMs: numberOption(options["wait-ms"], undefined),
-      }),
+    const payload = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/run`, {
+      command: options._,
+      cwd: options.cwd,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
     });
-    const payload = await result.json();
-    if (!result.ok) throw new Error(payload.error || `HTTP ${result.status}`);
     printResult(payload);
     return;
   }
@@ -153,25 +185,78 @@ async function main() {
     const source = options._.join(" ").trim();
     if (!agentId) throw new Error("Missing agent id.");
     if (!source) throw new Error("Missing shell command string.");
-    const token = options.token || process.env.LCR_TOKEN;
-    if (!token) throw new Error("Missing token. Pass --token or set LCR_TOKEN.");
-    const result = await fetch(new URL(`/agents/${encodeURIComponent(agentId)}/run`, options.url || defaultUrl()).toString(), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        command: source,
-        shell: true,
-        cwd: options.cwd,
-        timeoutMs: numberOption(options["timeout-ms"], undefined),
-        waitMs: numberOption(options["wait-ms"], undefined),
-      }),
+    const payload = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/run`, {
+      command: source,
+      shell: true,
+      cwd: options.cwd,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
     });
-    const payload = await result.json();
-    if (!result.ok) throw new Error(payload.error || `HTTP ${result.status}`);
     printResult(payload);
+    return;
+  }
+
+  if (command === "get") {
+    const [agentId, remotePath, localPath] = options._;
+    if (!agentId || !remotePath || !localPath) throw new Error("Usage: lcr get <agent-id> <remote-path> <local-path>");
+    const result = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/file/read`, {
+      path: remotePath,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    if (!result.ok) {
+      if (result.stderr) process.stderr.write(result.stderr);
+      process.exit(result.code || 1);
+    }
+    fs.mkdirSync(path.dirname(path.resolve(localPath)), { recursive: true });
+    fs.writeFileSync(localPath, Buffer.from(result.file.contentBase64, "base64"));
+    console.log(`[lcr] saved ${result.file.size} byte(s) to ${localPath}`);
+    return;
+  }
+
+  if (command === "put") {
+    const [agentId, localPath, remotePath] = options._;
+    if (!agentId || !localPath || !remotePath) throw new Error("Usage: lcr put <agent-id> <local-path> <remote-path>");
+    const contentBase64 = fs.readFileSync(localPath).toString("base64");
+    const result = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/file/write`, {
+      path: remotePath,
+      contentBase64,
+      mkdirp: options.mkdirp !== false,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    printFileWriteResult(result);
+    return;
+  }
+
+  if (command === "cat") {
+    const [agentId, remotePath] = options._;
+    if (!agentId || !remotePath) throw new Error("Usage: lcr cat <agent-id> <remote-path>");
+    const result = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/file/read`, {
+      path: remotePath,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    if (!result.ok) {
+      if (result.stderr) process.stderr.write(result.stderr);
+      process.exit(result.code || 1);
+    }
+    process.stdout.write(Buffer.from(result.file.contentBase64, "base64").toString("utf8"));
+    return;
+  }
+
+  if (command === "write") {
+    const [agentId, remotePath, ...contentParts] = options._;
+    if (!agentId || !remotePath) throw new Error("Usage: lcr write <agent-id> <remote-path> --stdin");
+    const content = options.stdin ? await readStdin() : Buffer.from(contentParts.join(" "), "utf8");
+    const result = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/file/write`, {
+      path: remotePath,
+      contentBase64: content.toString("base64"),
+      mkdirp: options.mkdirp !== false,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    printFileWriteResult(result);
     return;
   }
 

@@ -64,6 +64,15 @@ async function main() {
     const result = await runNode(["bin/lcr.js", "exec", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token, "--", process.execPath, "--version"]);
     if (result.code !== 0) throw new Error(result.stderr || `lcr exec exited ${result.code}`);
     if (!/^v\d+\./.test(result.stdout.trim())) throw new Error(`Unexpected stdout: ${result.stdout}`);
+
+    const remotePath = process.platform === "win32" ? `${process.env.TEMP}\\lcr-broker-smoke.txt` : "/tmp/lcr-broker-smoke.txt";
+    const write = await runNode(["bin/lcr.js", "write", agentId, remotePath, "--url", `http://127.0.0.1:${port}`, "--token", token, "hello-file"]);
+    if (write.code !== 0) throw new Error(write.stderr || `lcr write exited ${write.code}`);
+
+    const cat = await runNode(["bin/lcr.js", "cat", agentId, remotePath, "--url", `http://127.0.0.1:${port}`, "--token", token]);
+    if (cat.code !== 0) throw new Error(cat.stderr || `lcr cat exited ${cat.code}`);
+    if (cat.stdout !== "hello-file") throw new Error(`Unexpected cat stdout: ${cat.stdout}`);
+
     console.log("broker smoke ok");
   } finally {
     if (agent) agent.kill();

@@ -96,6 +96,15 @@ lcr exec agent-1234abcd -- node --version
 lcr sh agent-1234abcd 'whoami; hostname'
 ```
 
+Transfer files:
+
+```powershell
+lcr get agent-1234abcd C:\remote\file.txt .\file.txt
+lcr put agent-1234abcd .\local-file.txt C:\remote\file.txt
+lcr cat agent-1234abcd C:\remote\file.txt
+'hello from stdin' | lcr write agent-1234abcd C:\remote\hello.txt --stdin
+```
+
 The broker prints LAN health URLs. You may need to allow the broker port through Windows Firewall.
 
 ## Direct Mode
@@ -185,6 +194,15 @@ Response:
   "stderr": ""
 }
 ```
+
+Broker file transfer uses agent jobs over:
+
+```http
+POST /agents/:id/file/read
+POST /agents/:id/file/write
+```
+
+File payloads are base64 encoded JSON for portability.
 
 ## Git
 
