@@ -21,6 +21,7 @@ Usage:
   lcr agents [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr exec <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
   lcr sh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<command string>"
+  lcr pwsh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<PowerShell script>"
   lcr get <agent-id> <remote-path> <local-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr put <agent-id> <local-path> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr cat <agent-id> <remote-path> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
@@ -33,6 +34,7 @@ Direct mode:
   lcr health [--url http://host:${DEFAULT_PORT}]
   lcr run [--url http://host:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
   lcr shell [--url http://host:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<command string>"
+  lcr powershell [--url http://host:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<PowerShell script>"
 
 Environment:
   LCR_TOKEN
@@ -198,6 +200,21 @@ async function main() {
     return;
   }
 
+  if (command === "pwsh") {
+    const agentId = options._.shift();
+    const source = options._.join(" ").trim();
+    if (!agentId) throw new Error("Missing agent id.");
+    if (!source) throw new Error("Missing PowerShell script.");
+    const payload = await brokerPost(options, `/agents/${encodeURIComponent(agentId)}/run`, {
+      command: ["powershell", "-NoProfile", "-Command", source],
+      cwd: options.cwd,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+      waitMs: numberOption(options["wait-ms"], undefined),
+    });
+    printResult(payload);
+    return;
+  }
+
   if (command === "get") {
     const [agentId, remotePath, localPath] = options._;
     if (!agentId || !remotePath || !localPath) throw new Error("Usage: lcr get <agent-id> <remote-path> <local-path>");
@@ -290,6 +307,20 @@ async function main() {
       token: options.token,
       command: source,
       shell: true,
+      cwd: options.cwd,
+      timeoutMs: numberOption(options["timeout-ms"], undefined),
+    });
+    printResult(result);
+    return;
+  }
+
+  if (command === "powershell") {
+    const source = options._.join(" ").trim();
+    if (!source) throw new Error("Missing PowerShell script.");
+    const result = await runRemote({
+      url: options.url || defaultUrl(),
+      token: options.token,
+      command: ["powershell", "-NoProfile", "-Command", source],
       cwd: options.cwd,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
     });

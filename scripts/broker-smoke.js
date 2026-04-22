@@ -65,6 +65,12 @@ async function main() {
     if (result.code !== 0) throw new Error(result.stderr || `lcr exec exited ${result.code}`);
     if (!/^v\d+\./.test(result.stdout.trim())) throw new Error(`Unexpected stdout: ${result.stdout}`);
 
+    if (process.platform === "win32") {
+      const pwsh = await runNode(["bin/lcr.js", "pwsh", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token, '"pwsh-ok"']);
+      if (pwsh.code !== 0) throw new Error(pwsh.stderr || `lcr pwsh exited ${pwsh.code}`);
+      if (pwsh.stdout.trim() !== "pwsh-ok") throw new Error(`Unexpected pwsh stdout: ${pwsh.stdout}`);
+    }
+
     const remotePath = process.platform === "win32" ? `${process.env.TEMP}\\lcr-broker-smoke.txt` : "/tmp/lcr-broker-smoke.txt";
     const write = await runNode(["bin/lcr.js", "write", agentId, remotePath, "--url", `http://127.0.0.1:${port}`, "--token", token, "hello-file"]);
     if (write.code !== 0) throw new Error(write.stderr || `lcr write exited ${write.code}`);

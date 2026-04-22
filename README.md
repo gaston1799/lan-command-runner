@@ -94,6 +94,7 @@ Run commands by agent id:
 lcr exec agent-1234abcd -- hostname
 lcr exec agent-1234abcd -- node --version
 lcr sh agent-1234abcd 'whoami; hostname'
+lcr pwsh agent-1234abcd 'Get-Process | Select-Object -First 5 Name,Id'
 ```
 
 Transfer files:
@@ -139,7 +140,7 @@ Run an argv-safe command:
 ```powershell
 lcr run -- hostname
 lcr run -- node --version
-lcr run -- powershell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+lcr powershell '$PSVersionTable.PSVersion.ToString()'
 ```
 
 Run a shell command:
