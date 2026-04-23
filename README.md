@@ -32,7 +32,10 @@ cd C:\Users\Naquan\lan-command-runner
 npm link
 ```
 
-This adds `lcr` to PATH.
+This adds `lcr` and `lcr-cli` to PATH.
+
+- `lcr` opens the Windows tray UI by default.
+- `lcr-cli` is the terminal-first command interface.
 
 ## Install From Latest Release
 
@@ -70,31 +73,38 @@ lcr token
 
 ```powershell
 $env:LCR_TOKEN = '<paste-token-here>'
-lcr broker --host 0.0.0.0 --port 8765
+lcr-cli broker --host 0.0.0.0 --port 8765
+```
+
+Quick setup on an agent machine so later you can just run `lcr agent` or `lcr-cli agent`:
+
+```powershell
+lcr-cli setup --url http://192.168.1.50:8765 --token '<same-token>' --agent-name gaming-pc
 ```
 
 Start an agent on another machine:
 
 ```powershell
-$env:LCR_TOKEN = '<same-token>'
-lcr agent --url http://192.168.1.50:8765 --name gaming-pc
+lcr-cli agent
 ```
+
+The `lcr agent` form works too, because `lcr` forwards subcommands to `lcr-cli` and only opens the tray UI when you run it with no arguments.
 
 List connected agents:
 
 ```powershell
 $env:LCR_URL = 'http://192.168.1.50:8765'
 $env:LCR_TOKEN = '<same-token>'
-lcr agents
+lcr-cli agents
 ```
 
 Run commands by agent id:
 
 ```powershell
-lcr exec agent-1234abcd -- hostname
-lcr exec agent-1234abcd -- node --version
-lcr sh agent-1234abcd 'whoami; hostname'
-lcr pwsh agent-1234abcd 'Get-Process | Select-Object -First 5 Name,Id'
+lcr-cli exec agent-1234abcd -- hostname
+lcr-cli exec agent-1234abcd -- node --version
+lcr-cli sh agent-1234abcd 'whoami; hostname'
+lcr-cli pwsh agent-1234abcd 'Get-Process | Select-Object -First 5 Name,Id'
 ```
 
 Broker command output streams by default, so stdout/stderr appears while the remote process is still running. Add `--no-stream` to use the older wait-for-exit response mode.
@@ -102,22 +112,84 @@ Broker command output streams by default, so stdout/stderr appears while the rem
 Transfer files:
 
 ```powershell
-lcr get agent-1234abcd C:\remote\file.txt .\file.txt
-lcr put agent-1234abcd .\local-file.txt C:\remote\file.txt
-lcr cat agent-1234abcd C:\remote\file.txt
-'hello from stdin' | lcr write agent-1234abcd C:\remote\hello.txt --stdin
+lcr-cli get agent-1234abcd C:\remote\file.txt .\file.txt
+lcr-cli put agent-1234abcd .\local-file.txt C:\remote\file.txt
+lcr-cli cat agent-1234abcd C:\remote\file.txt
+'hello from stdin' | lcr-cli write agent-1234abcd C:\remote\hello.txt --stdin
 ```
 
 Agent lifecycle commands:
 
 ```powershell
-lcr disconnect agent-1234abcd
-lcr update-agent agent-1234abcd
+lcr-cli disconnect agent-1234abcd
+lcr-cli update-agent agent-1234abcd
 ```
 
 `update-agent` tells a Windows agent to disconnect, run the latest release installer, and reconnect to the same broker with the same agent id. Use it after publishing a new release when you want existing agents to upgrade themselves.
 
 The broker prints LAN health URLs. You may need to allow the broker port through Windows Firewall.
+
+### Windows Tray Mode
+
+On Windows, `lcr` opens the tray UI by default:
+
+```powershell
+lcr tray
+```
+
+Or just:
+
+```powershell
+lcr
+```
+
+The tray icon uses the 8-bit LCR icon at `assets/lcr-8bit.ico`. The source PNG is kept at `assets/lcr-8bit.png`.
+
+Regenerate the `.ico` from the PNG with:
+
+```powershell
+.\scripts\make-icon.ps1
+```
+
+The tray companion stays in the Windows notification area. Right-click it for:
+
+- Start broker
+- Stop broker
+- Copy local broker URL
+- Copy LAN broker URLs
+- Open logs folder
+- Open install folder
+- Exit
+
+Useful tray debugging commands:
+
+```powershell
+lcr tray --debug
+lcr tray --attach
+```
+
+- `--debug` runs the tray in the current terminal and shows immediate PowerShell errors.
+- `--attach` tails `%LOCALAPPDATA%\lan-command-runner\logs\tray.log` from another terminal without forcing the tray into the foreground.
+
+Double-clicking the tray icon starts the broker. The broker runs hidden and writes logs to:
+
+```text
+%LOCALAPPDATA%\lan-command-runner\logs\broker.log
+```
+
+Tray lifecycle logs are written to:
+
+```text
+%LOCALAPPDATA%\lan-command-runner\logs\tray.log
+```
+
+If the tray fails before PowerShell fully starts, check the launcher bootstrap log:
+
+```text
+%LOCALAPPDATA%\lan-command-runner\logs\tray-bootstrap.log
+```
+
+Tray mode uses the same token behavior as `start-broker.ps1`: it reads `LCR_TOKEN`, then `.lcr-token`, and generates `.lcr-token` if needed.
 
 ## Direct Mode
 
@@ -125,7 +197,7 @@ Direct mode runs a command server on the target itself. It is simpler, but every
 
 ```powershell
 $env:LCR_TOKEN = '<paste-token-here>'
-lcr serve --host 0.0.0.0 --port 8765
+lcr-cli serve --host 0.0.0.0 --port 8765
 ```
 
 ## Run Commands From Another Machine
@@ -140,28 +212,28 @@ $env:LCR_TOKEN = '<same-token>'
 Run an argv-safe command:
 
 ```powershell
-lcr run -- hostname
-lcr run -- node --version
-lcr powershell '$PSVersionTable.PSVersion.ToString()'
+lcr-cli run -- hostname
+lcr-cli run -- node --version
+lcr-cli powershell '$PSVersionTable.PSVersion.ToString()'
 ```
 
 Run a shell command:
 
 ```powershell
-lcr shell 'dir C:\'
-lcr shell 'whoami; hostname'
+lcr-cli shell 'dir C:\'
+lcr-cli shell 'whoami; hostname'
 ```
 
 Use a working directory:
 
 ```powershell
-lcr run --cwd C:\Users -- powershell -NoProfile -Command 'Get-ChildItem'
+lcr-cli run --cwd C:\Users -- powershell -NoProfile -Command 'Get-ChildItem'
 ```
 
 Increase timeout:
 
 ```powershell
-lcr run --timeout-ms 120000 -- powershell -NoProfile -Command 'Start-Sleep 5; "done"'
+lcr-cli run --timeout-ms 120000 -- powershell -NoProfile -Command 'Start-Sleep 5; "done"'
 ```
 
 ## HTTP API

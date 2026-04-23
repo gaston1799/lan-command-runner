@@ -74,17 +74,17 @@ try {
 
   Write-Host "[lcr] Installed to $InstallRoot"
   if (!$SkipLink) {
-    Write-Host "[lcr] Linked command: lcr"
-    & lcr --help | Select-Object -First 8
+    Write-Host "[lcr] Linked commands: lcr, lcr-cli"
+    Write-Host "[lcr] Run 'lcr' to open the tray UI or 'lcr-cli --help' for terminal commands."
   }
   Write-Host ""
   Write-Host "[lcr] Broker quick start:"
   Write-Host "  `$env:LCR_TOKEN = '<token-from-lcr-token>'"
-  Write-Host "  lcr broker --host 0.0.0.0 --port 8765"
+  Write-Host "  lcr-cli broker --host 0.0.0.0 --port 8765"
   Write-Host ""
-  Write-Host "[lcr] Agent quick start:"
-  Write-Host "  `$env:LCR_TOKEN = '<same-token>'"
-  Write-Host "  lcr agent --url http://BROKER_IP:8765 --name $env:COMPUTERNAME"
+  Write-Host "[lcr] Agent quick setup:"
+  Write-Host "  lcr-cli setup --url http://BROKER_IP:8765 --token '<same-token>' --agent-name $env:COMPUTERNAME"
+  Write-Host "  lcr-cli agent"
 } finally {
   Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
