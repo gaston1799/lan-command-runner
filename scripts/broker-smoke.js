@@ -54,12 +54,14 @@ async function waitForAgent() {
 }
 
 async function main() {
-  let broker = spawnNode(["bin/lcr.js", "broker", "--port", String(port), "--token", token]);
   let agent;
+  let broker;
 
   try {
-    await waitForHealth();
     agent = spawnNode(["bin/lcr.js", "agent", "--url", `http://127.0.0.1:${port}`, "--token", token, "--id", "local"]);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    broker = spawnNode(["bin/lcr.js", "broker", "--port", String(port), "--token", token]);
+    await waitForHealth();
     const agentId = await waitForAgent();
     const result = await runNode(["bin/lcr.js", "exec", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token, process.execPath, "--version"]);
     if (result.code !== 0) throw new Error(result.stderr || `lcr exec exited ${result.code}`);
