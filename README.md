@@ -28,7 +28,7 @@ Do not expose this to the public internet. Use it only on a trusted LAN, VPN, or
 ## Install For Development
 
 ```powershell
-cd C:\Users\Naquan\lan-command-runner
+cd C:\Users\gaston\lan-command-runner
 npm link
 ```
 

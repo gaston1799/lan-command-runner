@@ -29,6 +29,15 @@ $script:connectedAgentsMenuItem = $null
 $script:isExiting = $false
 $script:settingsPath = Join-Path $env:LOCALAPPDATA "lan-command-runner\tray-settings.json"
 $script:settings = $null
+$script:commandPollTimer = $null
+$script:currentCommandJobId = $null
+$script:currentCommandAfter = 0
+$script:isPollingCommand = $false
+$script:commandStatusLabel = $null
+$script:executeButton = $null
+$script:refreshAgentsButton = $null
+$script:tokenInput = $null
+$script:notifyIcon = $null
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
@@ -121,6 +130,51 @@ function Get-LcrToken {
   return $script:resolvedToken
 }
 
+function Set-LcrToken($newToken) {
+  $rawToken = if ($null -eq $newToken) { "" } else { [string]$newToken }
+  $normalizedToken = $rawToken.Trim()
+  if ([string]::IsNullOrWhiteSpace($normalizedToken)) {
+    throw "Token cannot be empty."
+  }
+
+  Set-Content -LiteralPath $tokenPath -Value $normalizedToken -NoNewline
+  [Environment]::SetEnvironmentVariable("LCR_TOKEN", $normalizedToken, "User")
+  $env:LCR_TOKEN = $normalizedToken
+  $script:resolvedToken = $normalizedToken
+  Write-TrayLog "Saved LCR token to .lcr-token and user environment."
+}
+
+function Get-TokenInputText {
+  if ($script:tokenInput -and $null -ne $script:tokenInput.Text) {
+    return [string]$script:tokenInput.Text
+  }
+  return ""
+}
+
+function Get-AgentSetupUrl {
+  $lanAddress = @(Get-LanAddresses | Where-Object { $_ -and $_ -notlike "169.254.*" } | Select-Object -First 1)
+  if ($lanAddress.Count -gt 0) {
+    return "http://$($lanAddress[0]):$Port"
+  }
+  return $script:brokerUrl
+}
+
+function ConvertTo-PowerShellSingleQuoted($value) {
+  return "'" + ([string]$value).Replace("'", "''") + "'"
+}
+
+function Get-AgentSetupCommand($agentName, $agentId) {
+  $resolvedToken = Get-LcrToken
+  $setupUrl = Get-AgentSetupUrl
+  $safeAgentName = if ([string]::IsNullOrWhiteSpace($agentName)) { "StreamPC" } else { $agentName.Trim() }
+  $safeAgentId = if ([string]::IsNullOrWhiteSpace($agentId)) { $safeAgentName } else { $agentId.Trim() }
+  $quotedUrl = ConvertTo-PowerShellSingleQuoted $setupUrl
+  $quotedToken = ConvertTo-PowerShellSingleQuoted $resolvedToken
+  $quotedAgentName = ConvertTo-PowerShellSingleQuoted $safeAgentName
+  $quotedAgentId = ConvertTo-PowerShellSingleQuoted $safeAgentId
+  return "iwr -UseB https://github.com/gaston1799/lan-command-runner/releases/latest/download/install.ps1 | iex; lcr-cli setup --url $quotedUrl --token $quotedToken --agent-name $quotedAgentName --agent-id $quotedAgentId; lcr-cli agent"
+}
+
 function Get-LanAddresses {
   try {
     Get-NetIPAddress -AddressFamily IPv4 |
@@ -132,9 +186,18 @@ function Get-LanAddresses {
 }
 
 function Show-Balloon($title, $message) {
-  $notifyIcon.BalloonTipTitle = $title
-  $notifyIcon.BalloonTipText = $message
-  $notifyIcon.ShowBalloonTip(2500)
+  if (-not $script:notifyIcon) {
+    Write-TrayLog "Balloon skipped because notify icon is not available: $title - $message"
+    return
+  }
+
+  try {
+    $script:notifyIcon.BalloonTipTitle = $title
+    $script:notifyIcon.BalloonTipText = $message
+    $script:notifyIcon.ShowBalloonTip(2500)
+  } catch {
+    Write-TrayLog "Balloon failed: $($_.Exception.Message)"
+  }
   Write-TrayLog "Balloon: $title - $message"
 }
 
@@ -237,6 +300,21 @@ function Append-CommandLog($message) {
   }
   $timestamp = Get-Date -Format "MM/dd/yyyy hh:mm:ss tt"
   $script:commandLogTextBox.AppendText("[$timestamp] $message" + [Environment]::NewLine)
+}
+
+function Set-CommandUiBusy($isBusy, $statusText) {
+  if ($script:executeButton) {
+    $script:executeButton.Enabled = -not $isBusy
+  }
+  if ($script:refreshAgentsButton) {
+    $script:refreshAgentsButton.Enabled = -not $isBusy
+  }
+  if ($script:mainForm) {
+    $script:mainForm.UseWaitCursor = $isBusy
+  }
+  if ($script:commandStatusLabel) {
+    $script:commandStatusLabel.Text = $statusText
+  }
 }
 
 function Refresh-AgentSelector {
@@ -344,17 +422,72 @@ function Invoke-AgentCommand($agentId, $mode, $source) {
       command = $source
       shell = $true
       waitMs = 600000
+      stream = $true
     }
   } else {
     @{
       command = @("powershell", "-NoProfile", "-Command", $source)
       waitMs = 600000
+      stream = $true
     }
   }
 
   return Invoke-RestMethod -Method Post -Uri ($script:brokerUrl + "/agents/" + [uri]::EscapeDataString($agentId) + "/run") -Headers @{
     Authorization = "Bearer $resolvedToken"
   } -ContentType "application/json" -Body (($payload | ConvertTo-Json -Depth 6) -as [string])
+}
+
+function Complete-CommandPolling($result) {
+  if ($script:commandPollTimer) {
+    $script:commandPollTimer.Stop()
+  }
+  $script:currentCommandJobId = $null
+  $script:currentCommandAfter = 0
+  $script:isPollingCommand = $false
+
+  if ($null -ne $result) {
+    Append-CommandLog("Exit code: $($result.code)")
+    if ($result.timedOut) {
+      Append-CommandLog("Timed out waiting for remote process.")
+    }
+    Append-CommandLog("")
+  }
+  Set-CommandUiBusy $false "Idle"
+}
+
+function Poll-CommandEvents {
+  if (-not $script:currentCommandJobId -or $script:isPollingCommand) {
+    return
+  }
+
+  $script:isPollingCommand = $true
+  try {
+    $resolvedToken = Get-LcrToken
+    $payload = Invoke-RestMethod -Uri ($script:brokerUrl + "/jobs/" + [uri]::EscapeDataString($script:currentCommandJobId) + "/events?after=$($script:currentCommandAfter)&waitMs=0") -Headers @{
+      Authorization = "Bearer $resolvedToken"
+    }
+
+    foreach ($event in @($payload.events)) {
+      $script:currentCommandAfter = [Math]::Max($script:currentCommandAfter, [int]$event.seq)
+      if ($event.type -eq "output") {
+        if ($event.stream -eq "stderr") {
+          Append-CommandLog("STDERR> $($event.data)")
+        } else {
+          Append-CommandLog($event.data)
+        }
+      } elseif ($event.type -eq "result") {
+        Complete-CommandPolling $event.result
+        return
+      }
+    }
+  } catch {
+    Append-CommandLog("ERROR: $($_.Exception.Message)")
+    Append-CommandLog("")
+    Complete-CommandPolling $null
+    return
+  } finally {
+    $script:isPollingCommand = $false
+  }
 }
 
 function New-ControlPanel {
@@ -408,6 +541,7 @@ function New-ControlPanel {
     Refresh-AgentsListView
     Refresh-ConnectedAgentsMenu
   })
+  $script:refreshAgentsButton = $refreshAgentsButton
 
   $commandLabel = New-Object System.Windows.Forms.Label
   $commandLabel.Text = "Command / script"
@@ -440,30 +574,32 @@ function New-ControlPanel {
 
     Append-CommandLog("Executing on $agentId using $($modeCombo.SelectedItem)")
     Append-CommandLog($source)
-    $executeButton.Enabled = $false
-    $refreshAgentsButton.Enabled = $false
-    $form.UseWaitCursor = $true
+    Set-CommandUiBusy $true "Starting..."
     try {
       $result = Invoke-AgentCommand $agentId ([string]$modeCombo.SelectedItem) $source
-      if (-not [string]::IsNullOrEmpty([string]$result.stdout)) {
-        Append-CommandLog("STDOUT:")
-        Append-CommandLog([string]$result.stdout)
+      if ($result.stream -and $result.jobId) {
+        $script:currentCommandJobId = [string]$result.jobId
+        $script:currentCommandAfter = 0
+        Set-CommandUiBusy $true "Streaming..."
+        $script:commandPollTimer.Start()
+      } else {
+        if (-not [string]::IsNullOrEmpty([string]$result.stdout)) {
+          Append-CommandLog([string]$result.stdout)
+        }
+        if (-not [string]::IsNullOrEmpty([string]$result.stderr)) {
+          Append-CommandLog("STDERR: $([string]$result.stderr)")
+        }
+        Append-CommandLog("Exit code: $($result.code)")
+        Append-CommandLog("")
+        Set-CommandUiBusy $false "Idle"
       }
-      if (-not [string]::IsNullOrEmpty([string]$result.stderr)) {
-        Append-CommandLog("STDERR:")
-        Append-CommandLog([string]$result.stderr)
-      }
-      Append-CommandLog("Exit code: $($result.code)")
-      Append-CommandLog("")
     } catch {
       Append-CommandLog("ERROR: $($_.Exception.Message)")
       Append-CommandLog("")
-    } finally {
-      $form.UseWaitCursor = $false
-      $executeButton.Enabled = $true
-      $refreshAgentsButton.Enabled = $true
+      Set-CommandUiBusy $false "Idle"
     }
   })
+  $script:executeButton = $executeButton
 
   $clearLogButton = New-Object System.Windows.Forms.Button
   $clearLogButton.Text = "Clear Log"
@@ -489,8 +625,15 @@ function New-ControlPanel {
   $commandLog.Font = New-Object System.Drawing.Font("Consolas", 10)
   $script:commandLogTextBox = $commandLog
 
+  $commandStatusLabel = New-Object System.Windows.Forms.Label
+  $commandStatusLabel.Text = "Idle"
+  $commandStatusLabel.Location = New-Object System.Drawing.Point(270, 226)
+  $commandStatusLabel.AutoSize = $true
+  $script:commandStatusLabel = $commandStatusLabel
+
   $commandTab.Controls.Add($commandLog)
   $commandTab.Controls.Add($commandTopPanel)
+  $commandTopPanel.Controls.Add($commandStatusLabel)
 
   $agentsTopPanel = New-Object System.Windows.Forms.Panel
   $agentsTopPanel.Dock = [System.Windows.Forms.DockStyle]::Top
@@ -546,8 +689,8 @@ function New-ControlPanel {
   $agentsTab.Controls.Add($agentsTopPanel)
 
   $settingsPanel = New-Object System.Windows.Forms.Panel
-  $settingsPanel.Dock = [System.Windows.Forms.DockStyle]::Top
-  $settingsPanel.Height = 180
+  $settingsPanel.Dock = [System.Windows.Forms.DockStyle]::Fill
+  $settingsPanel.AutoScroll = $true
   $settingsPanel.Padding = New-Object System.Windows.Forms.Padding(16)
 
   $closeToTrayCheck = New-Object System.Windows.Forms.CheckBox
@@ -577,7 +720,121 @@ function New-ControlPanel {
   $settingsHelp.Size = New-Object System.Drawing.Size(880, 60)
   $settingsHelp.Location = New-Object System.Drawing.Point(16, 92)
 
-  $settingsPanel.Controls.AddRange(@($closeToTrayCheck, $showIpCheck, $settingsHelp))
+  $tokenLabel = New-Object System.Windows.Forms.Label
+  $tokenLabel.Text = "Broker token"
+  $tokenLabel.AutoSize = $true
+  $tokenLabel.Location = New-Object System.Drawing.Point(16, 160)
+
+  $tokenInput = New-Object System.Windows.Forms.TextBox
+  $tokenInput.Location = New-Object System.Drawing.Point(16, 184)
+  $tokenInput.Size = New-Object System.Drawing.Size(640, 24)
+  $tokenInput.Text = Get-LcrToken
+  $script:tokenInput = $tokenInput
+
+  $saveTokenButton = New-Object System.Windows.Forms.Button
+  $saveTokenButton.Text = "Save Token"
+  $saveTokenButton.Location = New-Object System.Drawing.Point(672, 181)
+  $saveTokenButton.Size = New-Object System.Drawing.Size(110, 30)
+
+  $copyTokenButton = New-Object System.Windows.Forms.Button
+  $copyTokenButton.Text = "Copy Token"
+  $copyTokenButton.Location = New-Object System.Drawing.Point(792, 181)
+  $copyTokenButton.Size = New-Object System.Drawing.Size(110, 30)
+
+  $setupLabel = New-Object System.Windows.Forms.Label
+  $setupLabel.Text = "Agent install/setup command"
+  $setupLabel.AutoSize = $true
+  $setupLabel.Location = New-Object System.Drawing.Point(16, 232)
+
+  $agentNameLabel = New-Object System.Windows.Forms.Label
+  $agentNameLabel.Text = "Agent name"
+  $agentNameLabel.AutoSize = $true
+  $agentNameLabel.Location = New-Object System.Drawing.Point(16, 262)
+
+  $agentNameInput = New-Object System.Windows.Forms.TextBox
+  $agentNameInput.Location = New-Object System.Drawing.Point(100, 258)
+  $agentNameInput.Size = New-Object System.Drawing.Size(180, 24)
+  $agentNameInput.Text = "StreamPC"
+
+  $agentIdLabel = New-Object System.Windows.Forms.Label
+  $agentIdLabel.Text = "Agent id"
+  $agentIdLabel.AutoSize = $true
+  $agentIdLabel.Location = New-Object System.Drawing.Point(308, 262)
+
+  $agentIdInput = New-Object System.Windows.Forms.TextBox
+  $agentIdInput.Location = New-Object System.Drawing.Point(372, 258)
+  $agentIdInput.Size = New-Object System.Drawing.Size(180, 24)
+  $agentIdInput.Text = "StreamPC"
+
+  $setupCommandBox = New-Object System.Windows.Forms.TextBox
+  $setupCommandBox.Location = New-Object System.Drawing.Point(16, 298)
+  $setupCommandBox.Size = New-Object System.Drawing.Size(886, 88)
+  $setupCommandBox.Multiline = $true
+  $setupCommandBox.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+  $setupCommandBox.WordWrap = $true
+  $setupCommandBox.ReadOnly = $true
+  $setupCommandBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+
+  $refreshSetupButton = New-Object System.Windows.Forms.Button
+  $refreshSetupButton.Text = "Refresh Command"
+  $refreshSetupButton.Location = New-Object System.Drawing.Point(16, 398)
+  $refreshSetupButton.Size = New-Object System.Drawing.Size(130, 30)
+
+  $copySetupButton = New-Object System.Windows.Forms.Button
+  $copySetupButton.Text = "Copy Command"
+  $copySetupButton.Location = New-Object System.Drawing.Point(158, 398)
+  $copySetupButton.Size = New-Object System.Drawing.Size(130, 30)
+
+  $refreshSetupCommand = {
+    $setupCommandBox.Text = Get-AgentSetupCommand $agentNameInput.Text $agentIdInput.Text
+  }
+
+  $saveTokenButton.add_Click({
+    try {
+      $tokenText = (Get-TokenInputText).Trim()
+      if ([string]::IsNullOrWhiteSpace($tokenText)) {
+        $tokenText = Get-LcrToken
+        $script:tokenInput.Text = $tokenText
+        Write-TrayLog "Token input was empty during save; restored current token before saving."
+      }
+      Set-LcrToken $tokenText
+      & $refreshSetupCommand
+      Show-Balloon "Token saved" "LCR_TOKEN was saved for this user."
+    } catch {
+      [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "LCR", "OK", "Error") | Out-Null
+    }
+  })
+
+  $copyTokenButton.add_Click({
+    $tokenText = (Get-TokenInputText).Trim()
+    if ([string]::IsNullOrWhiteSpace($tokenText)) {
+      $tokenText = Get-LcrToken
+      $script:tokenInput.Text = $tokenText
+    }
+    [System.Windows.Forms.Clipboard]::SetText($tokenText)
+    Show-Balloon "Copied" "Copied broker token."
+  })
+
+  $refreshSetupButton.add_Click({
+    & $refreshSetupCommand
+  })
+
+  $copySetupButton.add_Click({
+    & $refreshSetupCommand
+    [System.Windows.Forms.Clipboard]::SetText($setupCommandBox.Text)
+    Show-Balloon "Copied" "Copied agent setup command."
+  })
+
+  $agentNameInput.add_TextChanged({ & $refreshSetupCommand })
+  $agentIdInput.add_TextChanged({ & $refreshSetupCommand })
+  & $refreshSetupCommand
+
+  $settingsPanel.Controls.AddRange(@(
+    $closeToTrayCheck, $showIpCheck, $settingsHelp,
+    $tokenLabel, $tokenInput, $saveTokenButton, $copyTokenButton,
+    $setupLabel, $agentNameLabel, $agentNameInput, $agentIdLabel, $agentIdInput,
+    $setupCommandBox, $refreshSetupButton, $copySetupButton
+  ))
   $settingsTab.Controls.Add($settingsPanel)
 
   [void]$tabs.TabPages.Add($commandTab)
@@ -586,13 +843,28 @@ function New-ControlPanel {
   $form.Controls.Add($tabs)
 
   $form.add_FormClosing({
-    param($sender, $eventArgs)
-    if (-not $script:isExiting -and $script:settings.CloseToTray) {
-      $eventArgs.Cancel = $true
-      $form.Hide()
+    param($sender, [System.Windows.Forms.FormClosingEventArgs]$eventArgs)
+    $closeToTray = $true
+    if ($script:settings -and $script:settings.ContainsKey("CloseToTray")) {
+      $closeToTray = [bool]$script:settings.CloseToTray
+    }
+
+    if (-not $script:isExiting -and $closeToTray) {
+      if ($eventArgs) {
+        $eventArgs.Cancel = $true
+      }
+      if ($sender -is [System.Windows.Forms.Form]) {
+        $sender.Hide()
+      } elseif ($script:mainForm) {
+        $script:mainForm.Hide()
+      }
       Show-Balloon "LCR still running" "The control panel was hidden to the tray."
     }
   })
+
+  $script:commandPollTimer = New-Object System.Windows.Forms.Timer
+  $script:commandPollTimer.Interval = 350
+  $script:commandPollTimer.add_Tick({ Poll-CommandEvents })
 
   return $form
 }
@@ -648,7 +920,8 @@ function Stop-Broker {
 }
 
 function Copy-Text($value, $label) {
-  [System.Windows.Forms.Clipboard]::SetText($value)
+  $text = if ($null -eq $value) { "" } else { [string]$value }
+  [System.Windows.Forms.Clipboard]::SetText($text)
   Write-TrayLog "Copied text to clipboard: $label"
   Show-Balloon "Copied" $label
 }
@@ -660,9 +933,14 @@ function Exit-Tray {
     $script:mainForm.Close()
   }
   Stop-Broker
-  $notifyIcon.Visible = $false
-  $notifyIcon.Dispose()
-  $script:appContext.ExitThread()
+  if ($script:notifyIcon) {
+    $script:notifyIcon.Visible = $false
+    $script:notifyIcon.Dispose()
+    $script:notifyIcon = $null
+  }
+  if ($script:appContext) {
+    $script:appContext.ExitThread()
+  }
 }
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -672,6 +950,7 @@ $script:settings = Load-Settings
 $script:appContext = New-Object System.Windows.Forms.ApplicationContext
 $script:mainForm = New-ControlPanel
 $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+$script:notifyIcon = $notifyIcon
 $notifyIcon.Icon = New-TrayIcon
 $notifyIcon.Text = "LAN Command Runner"
 $notifyIcon.Visible = $true

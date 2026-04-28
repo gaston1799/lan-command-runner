@@ -31,6 +31,7 @@ Usage:
   lcr-cli write <agent-id> <remote-path> --stdin [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr-cli disconnect <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr-cli update-agent <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr-cli ui [--host 0.0.0.0] [--port ${DEFAULT_PORT}] [--token <token>]
   lcr-cli tray [--host 0.0.0.0] [--port ${DEFAULT_PORT}] [--token <token>] [--debug] [--attach]
 
 Direct mode:
@@ -48,7 +49,7 @@ Environment:
   LCR_CONFIG
 
 Notes:
-  - Running \`lcr\` with no arguments opens the tray UI.
+  - Running \`lcr\` with no arguments opens the control panel UI.
   - Use \`lcr-cli\` for terminal-first command usage.
   - \`lcr-cli setup\` saves defaults so \`lcr-cli agent\` can run with no extra flags.
 `.trim());
@@ -236,9 +237,9 @@ async function main() {
     return;
   }
 
-  if (command === "tray") {
+  if (command === "tray" || command === "ui") {
     if (process.platform !== "win32") {
-      throw new Error("Tray mode currently supports Windows only.");
+      throw new Error("Tray/UI mode currently supports Windows only.");
     }
 
     const trayLog = path.join(process.env.LOCALAPPDATA || "", "lan-command-runner", "logs", "tray.log");
@@ -277,8 +278,9 @@ async function main() {
     if (options.debug) args.push("-DebugConsole");
 
     const { spawn, spawnSync } = require("node:child_process");
-    if (options.debug) {
-      console.log("[lcr] tray debug mode. This terminal will stay attached until the tray exits.");
+    if (options.debug || command === "ui") {
+      if (command === "ui") console.log("[lcr] opening control panel. Close the window to keep it in the tray.");
+      else console.log("[lcr] tray debug mode. This terminal will stay attached until the tray exits.");
       const result = spawnSync("powershell", args, {
         stdio: "inherit",
         windowsHide: false,

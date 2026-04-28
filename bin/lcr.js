@@ -6,7 +6,7 @@ const { spawn } = require("node:child_process");
 
 const cliPath = path.join(__dirname, "lcr-cli.js");
 const args = process.argv.slice(2);
-const forwardedArgs = args.length ? args : ["tray"];
+const forwardedArgs = args.length ? args : ["ui"];
 
 const child = spawn(process.execPath, [cliPath, ...forwardedArgs], {
   stdio: "inherit",
