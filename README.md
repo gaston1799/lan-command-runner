@@ -118,6 +118,10 @@ lcr-cli cat agent-1234abcd C:\remote\file.txt
 'hello from stdin' | lcr-cli write agent-1234abcd C:\remote\hello.txt --stdin
 ```
 
+Broker file operations stream progress by default. `get`, `put`, `cat`, and `write` return a job
+id immediately, then print progress lines to stderr while the agent reads, encodes, writes, and
+renames files. File contents still go to stdout for `cat`, so piping remains usable.
+
 Agent lifecycle commands:
 
 ```powershell

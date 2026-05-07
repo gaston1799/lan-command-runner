@@ -130,6 +130,13 @@ async function streamBrokerJob(options, config, jobId) {
         if (event.stream === "stderr") process.stderr.write(event.data || "");
         else process.stdout.write(event.data || "");
       }
+      if (event.type === "progress") {
+        const total = Number(event.total || 0);
+        const current = Number(event.current || 0);
+        const percent = total > 0 ? ` ${Math.floor((current / total) * 100)}%` : "";
+        const message = event.message || event.phase || "progress";
+        process.stderr.write(`[lcr] ${message}${percent}\n`);
+      }
       if (event.type === "result") return event.result;
     }
   }
@@ -414,14 +421,16 @@ async function main() {
       path: remotePath,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
       waitMs: numberOption(options["wait-ms"], undefined),
+      stream: true,
     });
-    if (!result.ok) {
-      if (result.stderr) process.stderr.write(result.stderr);
-      process.exit(result.code || 1);
+    const finalResult = result.stream ? await streamBrokerJob(options, config, result.jobId) : result;
+    if (!finalResult.ok) {
+      if (finalResult.stderr) process.stderr.write(finalResult.stderr);
+      process.exit(finalResult.code || 1);
     }
     fs.mkdirSync(path.dirname(path.resolve(localPath)), { recursive: true });
-    fs.writeFileSync(localPath, Buffer.from(result.file.contentBase64, "base64"));
-    console.log(`[lcr] saved ${result.file.size} byte(s) to ${localPath}`);
+    fs.writeFileSync(localPath, Buffer.from(finalResult.file.contentBase64, "base64"));
+    console.log(`[lcr] saved ${finalResult.file.size} byte(s) to ${localPath}`);
     return;
   }
 
@@ -435,8 +444,9 @@ async function main() {
       mkdirp: options.mkdirp !== false,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
       waitMs: numberOption(options["wait-ms"], undefined),
+      stream: true,
     });
-    printFileWriteResult(result);
+    printFileWriteResult(result.stream ? await streamBrokerJob(options, config, result.jobId) : result);
     return;
   }
 
@@ -447,12 +457,14 @@ async function main() {
       path: remotePath,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
       waitMs: numberOption(options["wait-ms"], undefined),
+      stream: true,
     });
-    if (!result.ok) {
-      if (result.stderr) process.stderr.write(result.stderr);
-      process.exit(result.code || 1);
+    const finalResult = result.stream ? await streamBrokerJob(options, config, result.jobId) : result;
+    if (!finalResult.ok) {
+      if (finalResult.stderr) process.stderr.write(finalResult.stderr);
+      process.exit(finalResult.code || 1);
     }
-    process.stdout.write(Buffer.from(result.file.contentBase64, "base64").toString("utf8"));
+    process.stdout.write(Buffer.from(finalResult.file.contentBase64, "base64").toString("utf8"));
     return;
   }
 
@@ -466,8 +478,9 @@ async function main() {
       mkdirp: options.mkdirp !== false,
       timeoutMs: numberOption(options["timeout-ms"], undefined),
       waitMs: numberOption(options["wait-ms"], undefined),
+      stream: true,
     });
-    printFileWriteResult(result);
+    printFileWriteResult(result.stream ? await streamBrokerJob(options, config, result.jobId) : result);
     return;
   }
 

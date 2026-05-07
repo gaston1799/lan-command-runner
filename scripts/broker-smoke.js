@@ -83,6 +83,7 @@ async function main() {
     const remotePath = process.platform === "win32" ? `${process.env.TEMP}\\lcr-broker-smoke.txt` : "/tmp/lcr-broker-smoke.txt";
     const write = await runNode(["bin/lcr.js", "write", agentId, remotePath, "--url", `http://127.0.0.1:${port}`, "--token", token, "hello-file"]);
     if (write.code !== 0) throw new Error(write.stderr || `lcr write exited ${write.code}`);
+    if (!write.stderr.includes("Wrote 10 byte(s)")) throw new Error(`Missing write progress output: ${write.stderr}`);
 
     const cat = await runNode(["bin/lcr.js", "cat", agentId, remotePath, "--url", `http://127.0.0.1:${port}`, "--token", token]);
     if (cat.code !== 0) throw new Error(cat.stderr || `lcr cat exited ${cat.code}`);
