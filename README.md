@@ -2,6 +2,11 @@
 
 Token-authenticated LAN command runner for machines you administer.
 
+## License And Branding
+
+Code is licensed under the MIT license. The LAN Command Runner and LCR names are
+reserved trademarks; see `LICENSE` and `TRADEMARKS.md`.
+
 It gives you two modes:
 
 - broker/agent mode: one LAN broker, many outbound agents, command by agent id
