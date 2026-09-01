@@ -1,6 +1,6 @@
 {
   "name": "lan-command-runner",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Token-authenticated LAN command runner for machines you administer.",
   "type": "commonjs",
   "bin": {
@@ -9,7 +9,7 @@
     "lan-command-runner": "./bin/lcr-cli.js"
   },
   "scripts": {
-    "smoke": "node scripts/smoke.js && node scripts/broker-smoke.js"
+    "smoke": "node scripts/config-smoke.js && node scripts/cli-smoke.js && node scripts/discovery-smoke.js && node scripts/callback-smoke.js && node scripts/doctor-smoke.js && node scripts/update-smoke.js && node scripts/startup-smoke.js && node scripts/mesh-smoke.js && node scripts/smoke.js && node scripts/broker-smoke.js"
   },
   "keywords": [
     "lan",

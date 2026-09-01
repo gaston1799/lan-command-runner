@@ -1,4 +1,7 @@
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { generateToken } = require("../lib/server");
 
 const token = generateToken();
@@ -56,6 +59,8 @@ async function waitForAgent() {
 async function main() {
   let agent;
   let broker;
+  const localUploadPath = path.join(os.tmpdir(), `lcr-broker-smoke-${process.pid}-upload.bin`);
+  const localDownloadPath = path.join(os.tmpdir(), `lcr-broker-smoke-${process.pid}-download.bin`);
 
   try {
     agent = spawnNode(["bin/lcr.js", "agent", "--url", `http://127.0.0.1:${port}`, "--token", token, "--id", "local"]);
@@ -89,13 +94,54 @@ async function main() {
     if (cat.code !== 0) throw new Error(cat.stderr || `lcr cat exited ${cat.code}`);
     if (cat.stdout !== "hello-file") throw new Error(`Unexpected cat stdout: ${cat.stdout}`);
 
+    const largeFile = Buffer.alloc(2_500_123);
+    for (let index = 0; index < largeFile.length; index += 1) largeFile[index] = index % 251;
+    fs.writeFileSync(localUploadPath, largeFile);
+    const largeRemotePath = process.platform === "win32"
+      ? `${process.env.TEMP}\\lcr-broker-smoke-large.bin`
+      : "/tmp/lcr-broker-smoke-large.bin";
+    const put = await runNode([
+      "bin/lcr.js",
+      "put",
+      agentId,
+      localUploadPath,
+      largeRemotePath,
+      "--chunk-size",
+      "65536",
+      "--url",
+      `http://127.0.0.1:${port}`,
+      "--token",
+      token,
+    ]);
+    if (put.code !== 0) throw new Error(put.stderr || `lcr put exited ${put.code}`);
+    if (!put.stdout.includes(`uploaded ${largeFile.length} byte(s)`)) {
+      throw new Error(`Unexpected put stdout: ${put.stdout}`);
+    }
+
+    const get = await runNode([
+      "bin/lcr.js",
+      "get",
+      agentId,
+      largeRemotePath,
+      localDownloadPath,
+      "--url",
+      `http://127.0.0.1:${port}`,
+      "--token",
+      token,
+    ]);
+    if (get.code !== 0) throw new Error(get.stderr || `lcr get exited ${get.code}`);
+    const downloaded = fs.readFileSync(localDownloadPath);
+    if (!downloaded.equals(largeFile)) throw new Error("Large file round-trip did not preserve bytes.");
+
     const disconnect = await runNode(["bin/lcr.js", "disconnect", agentId, "--url", `http://127.0.0.1:${port}`, "--token", token]);
     if (disconnect.code !== 0) throw new Error(disconnect.stderr || `lcr disconnect exited ${disconnect.code}`);
 
     console.log("broker smoke ok");
   } finally {
+    fs.rmSync(localUploadPath, { force: true });
+    fs.rmSync(localDownloadPath, { force: true });
     if (agent) agent.kill();
-    broker.kill();
+    if (broker) broker.kill();
   }
 }
 
