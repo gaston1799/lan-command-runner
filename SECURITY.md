@@ -23,6 +23,32 @@ Use it only on a trusted LAN, VPN, or SSH tunnel.
 Never commit broker tokens, machine-specific config files, command logs, or
 local paths.
 
+## Request Signing (0.15.0+)
+
+Every authenticated request and response is HMAC-SHA256 signed over
+`method`, `path`, the body hash, a timestamp, and a per-request nonce, keyed by
+the shared token. A valid signature is proof of possession of that token, and
+replay protection (a nonce cache plus a time window) means a captured request
+cannot be replayed and a tampered body or substituted response is rejected.
+
+This is an integrity and replay layer, not confidentiality: it prevents a
+passive or active on-LAN attacker from *injecting* commands, files, or forged
+results, but it does not encrypt them. For confidentiality, keep LCR on a LAN
+or a private VPN (WireGuard, Tailscale) or an SSH tunnel. TLS is on the roadmap
+and remains unimplemented in this release.
+
+Set `LCR_ALLOW_UNSIGNED=1` only for one-way migration from an older build; it
+disables the requirement and is not intended for mixed-version fleets.
+
+## Audit Log (0.15.0+)
+
+The broker and each agent append one JSON line per significant event (job
+queued/started/finished/cancelled, agent register/disconnect/prune) to
+`%LOCALAPPDATA%\lan-command-runner\logs\audit.log`, rotated when it exceeds
+10 MB. Command arguments are redacted before they are written. Review it with
+`lcr-cli log [--tail N] [--json]`. Set `LCR_AUDIT_DISABLED=1` to disable, or
+`LCR_AUDIT_DIR=<path>` to relocate it.
+
 ## Mesh Mode
 
 `lcr-cli peer add` refuses a plain-HTTP peer whose address is public, or whose
@@ -79,5 +105,7 @@ LCR does not add firewall rules and does not configure your router. Opening the
 broker's TCP port and the discovery UDP port is a deliberate act you perform
 yourself.
 
-Run one streamed file transfer at a time per broker. Concurrent large transfers
-can overflow the broker's in-memory event buffer and abort a download.
+Streamed downloads are flow-controlled: the broker pauses the agent while more
+than a bounded amount of output is buffered for a slow client, so a large file
+no longer overruns an in-memory buffer. Downloads carry a SHA-256 of the source
+file so the client verifies the bytes it received.

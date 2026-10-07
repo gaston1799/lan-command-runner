@@ -5,3 +5,7 @@ node_modules/
 coverage/
 tmp/
 dist/
+
+# local agent handoff scratch
+.codex-handoffs/
+

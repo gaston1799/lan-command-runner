@@ -39,6 +39,25 @@ Defaults are intentionally conservative:
 
 Do not expose this to the public internet. Use it only on a trusted LAN, VPN, or SSH tunnel.
 
+## Hardening In 0.15.0
+
+- **Signed requests and responses** (HMAC-SHA256 + replay protection) make
+  command/file injection fail closed on an untrusted network. It provides
+  integrity and replay protection, not confidentiality — pair it with a VPN
+  for encryption.
+- **Bounded output and a real timeout**: runaway output is capped and flagged
+  `truncated` instead of crashing the agent, and a timed-out command kills its
+  whole process tree.
+- **Audit log**: the broker and each agent append redacted JSON lines to
+  `%LOCALAPPDATA%\lan-command-runner\logs\audit.log`; read them with
+  `lcr-cli log`.
+- **Job control**: `lcr-cli jobs` lists jobs, `lcr-cli cancel <agent> <job-id>`
+  cancels a queued one, and `lcr-cli agents` now reports `online`/
+  `lastSeenAgeMs`.
+- **File integrity**: downloads verify a SHA-256 of the source file, and
+  streamed downloads are flow-controlled so large files no longer overflow a
+  fixed buffer.
+
 ## Install For Development
 
 ```powershell

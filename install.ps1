@@ -181,7 +181,7 @@ try {
 
   Push-Location $InstallRoot
   try {
-    npm install --omit=dev
+    npm ci --omit=dev --ignore-scripts
     if (!$SkipLink) {
       npm link
     }

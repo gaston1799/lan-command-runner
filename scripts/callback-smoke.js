@@ -1,6 +1,7 @@
 const net = require("node:net");
 const { createBroker } = require("../lib/broker");
 const { generateToken } = require("../lib/server");
+const { buildRequestHeaders } = require("../lib/sign");
 const { assert, assertEqual, createRunner } = require("./test-helpers");
 
 const CALLER_PORT = 18881;
@@ -42,13 +43,19 @@ function close(server, sockets = []) {
 }
 
 async function callback(port, token, body) {
+  const rawBody = JSON.stringify(body);
   const response = await fetch(`http://127.0.0.1:${port}/diagnostics/callback`, {
     method: "POST",
     headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(token
+        ? {
+            authorization: `Bearer ${token}`,
+            ...buildRequestHeaders({ secret: token, method: "POST", path: "/diagnostics/callback", body: rawBody }),
+          }
+        : {}),
       "content-type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: rawBody,
   });
   const text = await response.text();
   let payload = null;
@@ -90,10 +97,15 @@ async function main() {
     });
 
     await runner.test("agent endpoints do not reveal whether an agent id exists", async () => {
+      const registerBody = JSON.stringify({ id: "oracle-agent", name: "Oracle Agent" });
       const registrationResponse = await fetch(`http://127.0.0.1:${CALLER_PORT}/agent/register`, {
         method: "POST",
-        headers: { authorization: `Bearer ${callerToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ id: "oracle-agent", name: "Oracle Agent" }),
+        headers: {
+          authorization: `Bearer ${callerToken}`,
+          "content-type": "application/json",
+          ...buildRequestHeaders({ secret: callerToken, method: "POST", path: "/agent/register", body: registerBody }),
+        },
+        body: registerBody,
       });
       assertEqual(registrationResponse.status, 200, "test agent registered");
 

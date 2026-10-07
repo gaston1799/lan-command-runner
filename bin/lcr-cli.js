@@ -27,6 +27,7 @@ const { isInteractive, promptConfirm, promptSecret } = require("../lib/prompt");
 const { DEFAULT_PORT } = require("../lib/protocol");
 const { redactValue } = require("../lib/redact");
 const { generateToken, serve } = require("../lib/server");
+const { signedFetchJson } = require("../lib/transport");
 const {
   TASK_NAME,
   formatStatus,
@@ -35,6 +36,7 @@ const {
   statusStartup,
 } = require("../lib/startup");
 const { runUpdate, updatePlan } = require("../lib/update");
+const { defaultAuditDir, readAuditTail } = require("../lib/audit");
 
 function usage(exitCode = 0) {
   console.log(`
@@ -56,6 +58,9 @@ Usage:
   lcr-cli write <agent-id> <remote-path> --stdin [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr-cli disconnect <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr-cli update-agent <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr-cli jobs [--agent <agent-id>] [--json] [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr-cli cancel <agent-id> <job-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr-cli log [--tail 50] [--json] [--dir <path>]
   lcr-cli ui [--host 0.0.0.0] [--port ${DEFAULT_PORT}] [--token <token>]
   lcr-cli tray [--host 0.0.0.0] [--port ${DEFAULT_PORT}] [--token <token>] [--debug] [--attach]
 
@@ -193,28 +198,18 @@ function reciprocalSetupHint(view, peerName) {
 }
 
 async function brokerPost(options, config, route, payload) {
-  const result = await fetch(new URL(route, resolvedUrl(options, config)).toString(), {
+  return signedFetchJson(new URL(route, resolvedUrl(options, config)).toString(), {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${authToken(options, config)}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    token: authToken(options, config),
+    body: payload,
   });
-  const responsePayload = await result.json();
-  if (!result.ok) throw new Error(responsePayload.error || `HTTP ${result.status}`);
-  return responsePayload;
 }
 
 async function brokerGet(options, config, route) {
-  const result = await fetch(new URL(route, resolvedUrl(options, config)).toString(), {
-    headers: {
-      authorization: `Bearer ${authToken(options, config)}`,
-    },
+  return signedFetchJson(new URL(route, resolvedUrl(options, config)).toString(), {
+    method: "GET",
+    token: authToken(options, config),
   });
-  const responsePayload = await result.json();
-  if (!result.ok) throw new Error(responsePayload.error || `HTTP ${result.status}`);
-  return responsePayload;
 }
 
 async function streamBrokerJob(options, config, jobId) {
@@ -244,6 +239,7 @@ async function streamFileDownloadJob(options, config, jobId, localPath) {
   const tempPath = `${targetPath}.lcr-download`;
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const writer = fs.createWriteStream(tempPath);
+  const hash = crypto.createHash("sha256");
   let after = 0;
   let nextChunkIndex = 0;
   let finalResult = null;
@@ -278,6 +274,7 @@ async function streamFileDownloadJob(options, config, jobId, localPath) {
             );
           }
           const chunk = Buffer.from(String(event.dataBase64 || ""), "base64");
+          hash.update(chunk);
           await new Promise((resolve, reject) => {
             writer.write(chunk, (error) => (error ? reject(error) : resolve()));
           });
@@ -298,6 +295,11 @@ async function streamFileDownloadJob(options, config, jobId, localPath) {
   }
 
   await new Promise((resolve, reject) => writer.end((error) => (error ? reject(error) : resolve())));
+  const digest = hash.digest("hex");
+  if (finalResult.file && finalResult.file.sha256 && digest !== finalResult.file.sha256) {
+    if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
+    throw new Error("File integrity check failed: downloaded bytes do not match the source hash.");
+  }
   if (!finalResult.ok) {
     if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
     return finalResult;
@@ -322,6 +324,17 @@ function printFileWriteResult(result) {
     process.exit(result.code || 1);
   }
   console.log(`[lcr] wrote ${result.file?.size ?? 0} byte(s) to ${result.file?.path || "remote file"}`);
+}
+
+function formatJobs(jobs) {
+  if (!jobs || !jobs.length) {
+    console.log("[lcr] no jobs.");
+    return;
+  }
+  for (const job of jobs) {
+    const createdAt = job.createdAt ? new Date(job.createdAt).toISOString() : "";
+    console.log(`${job.id}\t${job.agentId}\t${job.status}\t${job.type}\t${createdAt}`);
+  }
 }
 
 const DEFAULT_FILE_TRANSFER_CHUNK_SIZE = 192 * 1024;
@@ -889,11 +902,7 @@ async function main() {
   }
 
   if (command === "agents") {
-    const result = await fetch(new URL("/agents", resolvedUrl(options, config)).toString(), {
-      headers: { authorization: `Bearer ${authToken(options, config)}` },
-    });
-    const payload = await result.json();
-    if (!result.ok) throw new Error(payload.error || `HTTP ${result.status}`);
+    const payload = await brokerGet(options, config, "/agents");
     console.log(JSON.stringify(payload, null, 2));
     return;
   }
@@ -989,7 +998,14 @@ async function main() {
       if (finalResult.stderr) process.stderr.write(finalResult.stderr);
       process.exit(finalResult.code || 1);
     }
-    process.stdout.write(Buffer.from(finalResult.file.contentBase64, "base64").toString("utf8"));
+    const content = Buffer.from(finalResult.file.contentBase64, "base64");
+    if (finalResult.file.sha256) {
+      const actual = crypto.createHash("sha256").update(content).digest("hex");
+      if (actual !== finalResult.file.sha256) {
+        throw new Error("File integrity check failed: downloaded bytes do not match the source hash.");
+      }
+    }
+    process.stdout.write(content.toString("utf8"));
     return;
   }
 
@@ -1026,6 +1042,55 @@ async function main() {
       waitMs: numberOption(options["wait-ms"], undefined),
     });
     printResult(result);
+    return;
+  }
+
+  if (command === "jobs") {
+    const query = options.agent ? `?agent=${encodeURIComponent(options.agent)}` : "";
+    const payload = await brokerGet(options, config, `/jobs${query}`);
+    if (options.json === true) {
+      console.log(JSON.stringify(payload, null, 2));
+    } else {
+      formatJobs(payload.jobs);
+    }
+    return;
+  }
+
+  if (command === "cancel") {
+    const [agentId, jobId] = options._;
+    if (!agentId || !jobId) throw new Error("Usage: lcr-cli cancel <agent-id> <job-id>");
+    const result = await brokerPost(
+      options,
+      config,
+      `/agents/${encodeURIComponent(agentId)}/jobs/${encodeURIComponent(jobId)}/cancel`,
+      {}
+    );
+    if (!result.ok) {
+      console.error(`[lcr] ${result.error || "could not cancel job"}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`[lcr] cancelled job ${jobId} (${result.status})`);
+    return;
+  }
+
+  if (command === "log") {
+    const dir = typeof options.dir === "string" && options.dir.trim() ? options.dir : defaultAuditDir();
+    const count = numberOption(options.tail, 50);
+    const lines = readAuditTail(dir, count);
+    if (options.json === true) {
+      console.log(JSON.stringify(lines, null, 2));
+      return;
+    }
+    if (!lines.length) {
+      console.log(`[lcr] no audit entries in ${dir}`);
+      return;
+    }
+    for (const line of lines) {
+      const { ts, host, event, ...rest } = line;
+      const restText = rest.raw ? rest.raw : JSON.stringify(rest);
+      console.log(`${ts || ""}  ${host || "-"} ${event || "-"} ${restText}`);
+    }
     return;
   }
 

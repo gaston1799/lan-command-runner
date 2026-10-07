@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { generateToken } = require("../lib/server");
+const { buildRequestHeaders } = require("../lib/sign");
 
 const token = generateToken();
 const port = 18766;
@@ -45,7 +46,10 @@ async function waitForHealth() {
 async function waitForAgent() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const response = await fetch(`http://127.0.0.1:${port}/agents`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...buildRequestHeaders({ secret: token, method: "GET", path: "/agents", body: "" }),
+      },
     });
     if (response.ok) {
       const payload = await response.json();

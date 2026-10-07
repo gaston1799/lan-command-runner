@@ -4,6 +4,7 @@ const { saveConfig } = require("../lib/config");
 const { discover } = require("../lib/discovery");
 const { createMeshSupervisor } = require("../lib/mesh");
 const { generateToken } = require("../lib/server");
+const { buildRequestHeaders } = require("../lib/sign");
 const {
   assert,
   assertEqual,
@@ -35,7 +36,10 @@ async function brokerHealth(port) {
 
 async function getAgents(node) {
   const response = await fetch(`http://127.0.0.1:${node.brokerPort}/agents`, {
-    headers: { authorization: `Bearer ${node.token}` },
+    headers: {
+      authorization: `Bearer ${node.token}`,
+      ...buildRequestHeaders({ secret: node.token, method: "GET", path: "/agents", body: "" }),
+    },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const payload = await response.json();
@@ -301,7 +305,10 @@ async function main() {
         await waitFor(
           async () => {
             const response = await fetch(`http://127.0.0.1:${TARGET_PORT}/agents`, {
-              headers: { authorization: `Bearer ${targetToken}` },
+              headers: {
+                authorization: `Bearer ${targetToken}`,
+                ...buildRequestHeaders({ secret: targetToken, method: "GET", path: "/agents", body: "" }),
+              },
             });
             const payload = await response.json();
             return payload.agents.some((entry) => entry.id === "recon-node");
