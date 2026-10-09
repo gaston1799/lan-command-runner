@@ -18,7 +18,7 @@ All three share:
 
 - client commands that return stdout/stderr/exit code
 - stdout/stderr/exit-code forwarding
-- mandatory bearer-token auth for command execution
+- bearer-token auth by default, with explicit private-network-only LAN trust
 
 ## Safety Model
 
@@ -258,15 +258,38 @@ lcr-cli peer list --json
 lcr-cli peer remove pc-c
 ```
 
-### Discovery Grants No Trust
+### Automatic Private-Network Connections
+
+For a deliberately tokenless broker on a trusted LAN or private VPN, an agent
+can watch discovery continuously and connect whenever a broker appears or
+changes ports:
+
+```powershell
+lcr-cli broker --trust-lan --host 0.0.0.0
+lcr-cli agent --auto-discover --name StreamPC --id StreamPC
+```
+
+The watcher polls UDP discovery every 10 seconds and uses the bounded TCP scan
+at most once per minute when broadcasts find nothing. It keeps one connection
+per discovered node and replaces that connection when the node advertises a
+new port. Public IPs and unresolved hostnames are rejected. Token-protected
+brokers are connected only when a token is already available in configuration
+or the environment.
+
+Use `--scan-interval-ms` and `--tcp-scan-interval-ms` to change the intervals.
+`--auto-discover` intentionally grants every reachable trusted-LAN broker the
+ability to issue commands to that agent while the watcher is running.
+
+### Discovery Grants No Trust By Default
 
 `lcr-cli discover` broadcasts on UDP 8766 and collects replies. A reply carries
 only a node id, a node name, a broker port, and a health path.
 
 - It **never carries a token**, in either direction.
-- It **never establishes trust**. A discovered node cannot control you and you
-  cannot control it.
-- Its only purpose is telling you the url to type into `peer add`.
+- Plain `discover` **never establishes trust**. A discovered node cannot control
+  you and you cannot control it unless you explicitly run `agent --discover`,
+  `agent --auto-discover`, or configure it as a peer.
+- Its default purpose is telling you the URL to type into `peer add`.
 
 Discovery is a convenience for finding candidates. Pairing is always the
 explicit, two-sided `peer add` above. Disable the responder entirely by setting

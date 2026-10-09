@@ -6,9 +6,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { parseArgs, numberOption } = require("../lib/args");
-const { agent } = require("../lib/agent");
+const { agent, createAgentConnection } = require("../lib/agent");
 const { broker } = require("../lib/broker");
 const { classifyUrlTarget, getLanAddresses, normalizeUrlKey, parsePort } = require("../lib/addr");
+const { isPrivateBrokerUrl, mergeBrokerCandidates } = require("../lib/auto-agent");
 const { defaultUrl, health, runRemote } = require("../lib/client");
 const {
   DEFAULT_DISCOVERY_PORT,
@@ -48,7 +49,7 @@ Usage:
   lcr-cli setup [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--agent-name <name>] [--agent-id <agent-id>] [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
   lcr-cli show-config [--reveal]
   lcr-cli broker [--token <token> | --trust-lan] [--host 127.0.0.1] [--port <port>]
-  lcr-cli agent [--url http://broker:${DEFAULT_PORT} | --discover] [--token <token>] [--name <name>] [--id <agent-id>]
+  lcr-cli agent [--url http://broker:${DEFAULT_PORT} | --discover | --auto-discover] [--token <token>] [--name <name>] [--id <agent-id>]
   lcr-cli agents [--url http://broker:${DEFAULT_PORT}] [--token <token>]
   lcr-cli nodes [--wait-ms 3000] [--json]
   lcr-cli scan [--json]
@@ -377,6 +378,85 @@ async function findBroker(options, config) {
     }
   }
   return candidates[0] || null;
+}
+
+async function findBrokers(options, config, scanFallback = true) {
+  const view = meshView(config);
+  const udp = await discover({
+    port: view.discovery.port,
+    waitMs: numberOption(options["wait-ms"], 3000),
+    selfNodeId: view.node.id,
+  });
+  const candidates = (udp.nodes || []).map((node) => ({
+    key: node.nodeId || node.brokerUrl,
+    url: node.brokerUrl,
+    name: node.nodeName,
+    authMode: node.authMode,
+  }));
+  if (!candidates.length && scanFallback) {
+    const scanned = await scanBrokers({});
+    for (const entry of scanned) {
+      candidates.push({
+        key: `scan:${entry.host}`,
+        url: `http://${entry.host}:${entry.port}`,
+        name: entry.host,
+        authMode: entry.authMode,
+      });
+    }
+  }
+  return mergeBrokerCandidates(candidates.filter((candidate) => isPrivateBrokerUrl(candidate.url)));
+}
+
+async function autoDiscoverAgent(options, config) {
+  const active = new Map();
+  const intervalMs = Math.max(3000, numberOption(options["scan-interval-ms"], 10000));
+  const scanEveryMs = Math.max(intervalMs, numberOption(options["tcp-scan-interval-ms"], 60000));
+  let lastTcpScanAt = 0;
+  let stopping = false;
+
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    await Promise.allSettled(Array.from(active.values(), (entry) => entry.connection.stop()));
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+
+  console.log("[lcr] Watching private LAN/VPN discovery for brokers.");
+  while (!stopping) {
+    try {
+      const now = Date.now();
+      const scanFallback = now - lastTcpScanAt >= scanEveryMs;
+      if (scanFallback) lastTcpScanAt = now;
+      const candidates = await findBrokers(options, config, scanFallback);
+      for (const candidate of candidates) {
+        const current = active.get(candidate.key);
+        if (current && normalizeUrlKey(current.url) === normalizeUrlKey(candidate.url)) continue;
+        if (current) await current.connection.stop();
+
+        const token = candidate.authMode === "none" ? "" : optionalAuthToken(options, config);
+        if (candidate.authMode !== "none" && !token) {
+          console.error(`[lcr] Skipping token-protected broker ${candidate.url}: no saved token.`);
+          continue;
+        }
+        const connection = createAgentConnection({
+          url: candidate.url,
+          token,
+          allowUnauthenticated: candidate.authMode === "none",
+          name: resolvedAgentName(options, config),
+          id: resolvedAgentId(options, config),
+        });
+        active.set(candidate.key, { url: candidate.url, connection });
+        console.log(`[lcr] Auto-connecting to ${candidate.url} (${candidate.authMode}).`);
+        connection.done.finally(() => {
+          if (active.get(candidate.key)?.connection === connection) active.delete(candidate.key);
+        });
+      }
+    } catch (error) {
+      console.error(`[lcr] auto-discovery warning: ${error.message}`);
+    }
+    if (!stopping) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
 }
 
 const DEFAULT_FILE_TRANSFER_CHUNK_SIZE = 1024 * 1024;
@@ -932,6 +1012,10 @@ async function main() {
   }
 
   if (command === "agent") {
+    if (options["auto-discover"] === true) {
+      await autoDiscoverAgent(options, config);
+      return;
+    }
     let url = resolvedUrl(options, config);
     let token;
     if (options.discover === true) {
