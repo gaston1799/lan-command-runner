@@ -69,6 +69,25 @@ test("a none-mode broker accepts tokenless register and admin requests", async (
   }
 });
 
+test("a none-mode broker rejects stale unknown-agent traffic cleanly", async () => {
+  const server = createBroker({ authMode: "none" });
+  try {
+    const port = await listen(server);
+    for (const route of ["poll", "result", "output"]) {
+      const response = await fetch(`http://127.0.0.1:${port}/agent/missing/${route}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /unknown agent/i);
+    }
+    assert.equal((await (await fetch(`http://127.0.0.1:${port}/health`)).json()).ok, true);
+  } finally {
+    await close(server);
+  }
+});
+
 test("token mode grandfathers unsigned pre-signing peers (0.14)", async () => {
   const token = generateToken();
   const server = createBroker({ token });

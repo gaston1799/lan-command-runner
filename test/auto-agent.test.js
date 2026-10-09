@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isPrivateBrokerUrl, mergeBrokerCandidates } = require("../lib/auto-agent");
+const { isLocalBrokerUrl, isPrivateBrokerUrl, mergeBrokerCandidates } = require("../lib/auto-agent");
 
 test("automatic broker connections reject public and unresolved hosts", () => {
   assert.equal(isPrivateBrokerUrl("http://192.168.7.93:9000"), true);
@@ -20,4 +20,11 @@ test("automatic discovery keeps one private address per broker", () => {
   ]);
   assert.equal(selected.length, 1);
   assert.equal(selected[0].url, "http://192.168.7.93:9000");
+});
+
+test("discovery recognizes the current machine's brokers", () => {
+  const local = ["192.168.7.94", "100.102.147.44"];
+  assert.equal(isLocalBrokerUrl("http://192.168.7.94:9540", local), true);
+  assert.equal(isLocalBrokerUrl("http://127.0.0.1:9540", local), true);
+  assert.equal(isLocalBrokerUrl("http://192.168.7.93:9566", local), false);
 });

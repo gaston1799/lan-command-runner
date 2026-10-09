@@ -9,7 +9,7 @@ const { parseArgs, numberOption } = require("../lib/args");
 const { agent, createAgentConnection } = require("../lib/agent");
 const { broker } = require("../lib/broker");
 const { classifyUrlTarget, getLanAddresses, normalizeUrlKey, parsePort } = require("../lib/addr");
-const { isPrivateBrokerUrl, mergeBrokerCandidates } = require("../lib/auto-agent");
+const { isLocalBrokerUrl, isPrivateBrokerUrl, mergeBrokerCandidates } = require("../lib/auto-agent");
 const { defaultUrl, health, runRemote } = require("../lib/client");
 const {
   DEFAULT_DISCOVERY_PORT,
@@ -362,6 +362,7 @@ function formatJobs(jobs) {
 // or null.
 async function findBroker(options, config) {
   const view = meshView(config);
+  const localAddresses = getLanAddresses();
   const udp = await discover({
     port: view.discovery.port,
     waitMs: numberOption(options["wait-ms"], 3000),
@@ -369,12 +370,15 @@ async function findBroker(options, config) {
   });
   const candidates = [];
   for (const node of udp.nodes || []) {
+    if (node.self || isLocalBrokerUrl(node.brokerUrl, localAddresses)) continue;
     candidates.push({ url: node.brokerUrl, name: node.nodeName, authMode: node.authMode });
   }
   if (!candidates.length) {
     const scanned = await scanBrokers({});
     for (const entry of scanned) {
-      candidates.push({ url: `http://${entry.host}:${entry.port}`, name: entry.host, authMode: entry.authMode });
+      const url = `http://${entry.host}:${entry.port}`;
+      if (isLocalBrokerUrl(url, localAddresses)) continue;
+      candidates.push({ url, name: entry.host, authMode: entry.authMode });
     }
   }
   return candidates[0] || null;
@@ -382,23 +386,28 @@ async function findBroker(options, config) {
 
 async function findBrokers(options, config, scanFallback = true) {
   const view = meshView(config);
+  const localAddresses = getLanAddresses();
   const udp = await discover({
     port: view.discovery.port,
     waitMs: numberOption(options["wait-ms"], 3000),
     selfNodeId: view.node.id,
   });
-  const candidates = (udp.nodes || []).map((node) => ({
-    key: node.nodeId || node.brokerUrl,
-    url: node.brokerUrl,
-    name: node.nodeName,
-    authMode: node.authMode,
-  }));
+  const candidates = (udp.nodes || [])
+    .filter((node) => !node.self && !isLocalBrokerUrl(node.brokerUrl, localAddresses))
+    .map((node) => ({
+      key: node.nodeId || node.brokerUrl,
+      url: node.brokerUrl,
+      name: node.nodeName,
+      authMode: node.authMode,
+    }));
   if (!candidates.length && scanFallback) {
     const scanned = await scanBrokers({});
     for (const entry of scanned) {
+      const url = `http://${entry.host}:${entry.port}`;
+      if (isLocalBrokerUrl(url, localAddresses)) continue;
       candidates.push({
         key: `scan:${entry.host}`,
-        url: `http://${entry.host}:${entry.port}`,
+        url,
         name: entry.host,
         authMode: entry.authMode,
       });
@@ -434,11 +443,11 @@ async function autoDiscoverAgent(options, config) {
         if (current && normalizeUrlKey(current.url) === normalizeUrlKey(candidate.url)) continue;
         if (current) await current.connection.stop();
 
-        const token = candidate.authMode === "none" ? "" : optionalAuthToken(options, config);
-        if (candidate.authMode !== "none" && !token) {
-          console.error(`[lcr] Skipping token-protected broker ${candidate.url}: no saved token.`);
+        if (candidate.authMode !== "none") {
+          console.error(`[lcr] Skipping token-protected broker ${candidate.url}; auto-discovery only joins LAN-trust brokers.`);
           continue;
         }
+        const token = "";
         const connection = createAgentConnection({
           url: candidate.url,
           token,

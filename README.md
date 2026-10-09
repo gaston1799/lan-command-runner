@@ -269,12 +269,12 @@ lcr-cli broker --trust-lan --host 0.0.0.0
 lcr-cli agent --auto-discover --name StreamPC --id StreamPC
 ```
 
-The watcher polls UDP discovery every 10 seconds and uses the bounded TCP scan
+The watcher polls UDP discovery every 10 seconds, ignores brokers running on
+the same machine, and uses the bounded TCP scan
 at most once per minute when broadcasts find nothing. It keeps one connection
 per discovered node and replaces that connection when the node advertises a
 new port. Public IPs and unresolved hostnames are rejected. Token-protected
-brokers are connected only when a token is already available in configuration
-or the environment.
+brokers are deliberately skipped; add those explicitly as authenticated peers.
 
 Use `--scan-interval-ms` and `--tcp-scan-interval-ms` to change the intervals.
 `--auto-discover` intentionally grants every reachable trusted-LAN broker the
