@@ -21,6 +21,7 @@ const {
   withMeshDefaults,
 } = require("../lib/config");
 const { discover } = require("../lib/discovery");
+const { scanBrokers } = require("../lib/scan");
 const { formatReport, runDoctor } = require("../lib/doctor");
 const { mesh } = require("../lib/mesh");
 const { isInteractive, promptConfirm, promptSecret } = require("../lib/prompt");
@@ -46,9 +47,11 @@ Usage:
   lcr-cli token
   lcr-cli setup [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--agent-name <name>] [--agent-id <agent-id>] [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
   lcr-cli show-config [--reveal]
-  lcr-cli broker [--token <token>] [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
-  lcr-cli agent [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--name <name>] [--id <agent-id>]
+  lcr-cli broker [--token <token> | --trust-lan] [--host 127.0.0.1] [--port <port>]
+  lcr-cli agent [--url http://broker:${DEFAULT_PORT} | --discover] [--token <token>] [--name <name>] [--id <agent-id>]
   lcr-cli agents [--url http://broker:${DEFAULT_PORT}] [--token <token>]
+  lcr-cli nodes [--wait-ms 3000] [--json]
+  lcr-cli scan [--json]
   lcr-cli exec <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] [--no-stream] -- <cmd> [args...]
   lcr-cli sh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] [--no-stream] "<command string>"
   lcr-cli pwsh <agent-id> [--url http://broker:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] [--no-stream] "<PowerShell script>"
@@ -80,7 +83,7 @@ Windows logon startup (current user only, no elevation, no stored password):
   lcr-cli startup status [--json]
 
 Direct mode:
-  lcr-cli serve [--token <token>] [--host 127.0.0.1] [--port ${DEFAULT_PORT}]
+  lcr-cli serve [--token <token> | --trust-lan] [--host 127.0.0.1] [--port <port>]
   lcr-cli health [--url http://host:${DEFAULT_PORT}]
   lcr-cli run [--url http://host:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] -- <cmd> [args...]
   lcr-cli shell [--url http://host:${DEFAULT_PORT}] [--token <token>] [--cwd <path>] [--timeout-ms 60000] "<command string>"
@@ -99,6 +102,8 @@ Notes:
   - Running \`lcr\` with no arguments opens the control panel UI.
   - Use \`lcr-cli\` for terminal-first command usage.
   - \`lcr-cli setup\` saves defaults so \`lcr-cli agent\` can run with no extra flags.
+  - Broker and direct-server ports are selected from 8765-9999 when --port and LCR_PORT are omitted.
+  - \`--trust-lan\` disables authentication and is only for private, trusted LANs or VPNs.
   - Tokens are redacted from show-config, setup, peer list, doctor, and startup output.
   - \`startup install\` registers a current-user logon task only. It never elevates,
     never asks for a password, and never puts a token on a command line.
@@ -337,9 +342,32 @@ function formatJobs(jobs) {
   }
 }
 
-const DEFAULT_FILE_TRANSFER_CHUNK_SIZE = 192 * 1024;
+// Broadcast-first, scan-fallback broker discovery. Returns { url, name, authMode }
+// or null.
+async function findBroker(options, config) {
+  const view = meshView(config);
+  const udp = await discover({
+    port: view.discovery.port,
+    waitMs: numberOption(options["wait-ms"], 3000),
+    selfNodeId: view.node.id,
+  });
+  const candidates = [];
+  for (const node of udp.nodes || []) {
+    candidates.push({ url: node.brokerUrl, name: node.nodeName, authMode: node.authMode });
+  }
+  if (!candidates.length) {
+    const scanned = await scanBrokers({});
+    for (const entry of scanned) {
+      candidates.push({ url: `http://${entry.host}:${entry.port}`, name: entry.host, authMode: entry.authMode });
+    }
+  }
+  return candidates[0] || null;
+}
+
+const DEFAULT_FILE_TRANSFER_CHUNK_SIZE = 1024 * 1024;
 const MIN_FILE_TRANSFER_CHUNK_SIZE = 64 * 1024;
-const MAX_FILE_TRANSFER_CHUNK_SIZE = 1024 * 1024;
+const MAX_FILE_TRANSFER_CHUNK_SIZE = 4 * 1024 * 1024;
+const UPLOAD_CONCURRENCY = 4;
 
 function fileTransferChunkSize(value) {
   const parsed = numberOption(value, DEFAULT_FILE_TRANSFER_CHUNK_SIZE);
@@ -380,26 +408,39 @@ async function uploadFileInChunks(options, config, agentId, localPath, remotePat
     if (!prepared.ok) throw new Error(prepared.stderr || "Could not prepare remote upload.");
 
     const stream = fs.createReadStream(sourcePath, { highWaterMark: chunkSize });
+    const inflight = [];
+    const settle = async () => {
+      const results = await Promise.all(inflight);
+      inflight.length = 0;
+      for (const result of results) {
+        if (!result.ok) throw new Error(result.stderr || "Remote upload chunk failed.");
+      }
+    };
     for await (const chunk of stream) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      hash.update(buffer);
-      const result = await brokerPost(
-        options,
-        config,
-        `/agents/${encodeURIComponent(agentId)}/file/write`,
-        {
-          type: "file.append",
-          path: temporaryRemotePath,
-          contentBase64: buffer.toString("base64"),
-          timeoutMs: numberOption(options["timeout-ms"], undefined),
-          waitMs: numberOption(options["wait-ms"], undefined),
-          stream: false,
-        }
-      );
-      if (!result.ok) throw new Error(result.stderr || "Remote upload chunk failed.");
+      const offset = sent;
       sent += buffer.length;
+      hash.update(buffer);
+      inflight.push(
+        brokerPost(
+          options,
+          config,
+          `/agents/${encodeURIComponent(agentId)}/file/write`,
+          {
+            type: "file.append",
+            path: temporaryRemotePath,
+            offset,
+            contentBase64: buffer.toString("base64"),
+            timeoutMs: numberOption(options["timeout-ms"], undefined),
+            waitMs: numberOption(options["wait-ms"], undefined),
+            stream: false,
+          }
+        )
+      );
+      if (inflight.length >= UPLOAD_CONCURRENCY) await settle();
       process.stderr.write(`[lcr] uploaded ${sent}/${stat.size} byte(s)\n`);
     }
+    await settle();
 
     const committed = await brokerPost(
       options,
@@ -854,30 +895,97 @@ async function main() {
   }
 
   if (command === "serve") {
-    serve({
+    const authMode = options["trust-lan"] ? "none" : "token";
+    await serve({
       host: resolvedHost(options, config),
-      port: resolvedPort(options, config),
-      token: authToken(options, config),
+      port: options.port || process.env.LCR_PORT,
+      token: authMode === "none" ? options.token || process.env.LCR_TOKEN || "" : authToken(options, config),
+      authMode,
     });
     return;
   }
 
   if (command === "broker") {
-    broker({
+    const authMode = options["trust-lan"] ? "none" : "token";
+    await broker({
       host: resolvedHost(options, config),
-      port: resolvedPort(options, config),
-      token: authToken(options, config),
+      port: options.port || process.env.LCR_PORT,
+      token: authMode === "none" ? options.token || process.env.LCR_TOKEN || "" : authToken(options, config),
+      authMode,
     });
     return;
   }
 
   if (command === "agent") {
+    let url = resolvedUrl(options, config);
+    let token;
+    if (options.discover === true) {
+      const found = await findBroker(options, config);
+      if (!found) throw new Error("No broker found on the LAN. Start one with: lcr-cli broker --trust-lan");
+      url = found.url;
+      token = found.authMode === "none" ? options.token || process.env.LCR_TOKEN || "" : authToken(options, config);
+      console.log(`[lcr] discovered broker at ${url} (authMode ${found.authMode})`);
+    } else {
+      token = authToken(options, config);
+    }
     await agent({
-      url: resolvedUrl(options, config),
-      token: authToken(options, config),
+      url,
+      token: token || "",
       name: resolvedAgentName(options, config),
       id: resolvedAgentId(options, config),
+      allowUnauthenticated: !token,
     });
+    return;
+  }
+
+  if (command === "scan") {
+    const results = await scanBrokers({});
+    if (options.json === true) {
+      console.log(JSON.stringify(results, null, 2));
+      return;
+    }
+    if (!results.length) {
+      console.log("[lcr] no brokers found via TCP scan.");
+      return;
+    }
+    for (const entry of results) {
+      console.log(`${entry.host}:${entry.port}\tv${entry.protocolVersion}\t${entry.authMode}`);
+    }
+    return;
+  }
+
+  if (command === "nodes") {
+    const view = meshView(config);
+    const udp = await discover({
+      port: view.discovery.port,
+      waitMs: numberOption(options["wait-ms"], 3000),
+      selfNodeId: view.node.id,
+    });
+    const scanned = await scanBrokers({});
+    const rows = [];
+    const seen = new Set();
+    for (const node of udp.nodes || []) {
+      if (seen.has(node.brokerUrl)) continue;
+      seen.add(node.brokerUrl);
+      rows.push({ name: node.nodeName, url: node.brokerUrl, version: node.protocolVersion, authMode: node.authMode, self: node.self });
+    }
+    for (const entry of scanned) {
+      const url = `http://${entry.host}:${entry.port}`;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      rows.push({ name: entry.host, url, version: entry.protocolVersion, authMode: entry.authMode, self: false });
+    }
+    if (options.json === true) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+    if (!rows.length) {
+      console.log("[lcr] no nodes found on the LAN.");
+      return;
+    }
+    for (const row of rows) {
+      console.log(`${row.name}\t${row.url}\tv${row.version}\t${row.authMode}${row.self ? "\t(this node)" : ""}`);
+    }
     return;
   }
 

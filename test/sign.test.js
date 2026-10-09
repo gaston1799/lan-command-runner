@@ -170,10 +170,15 @@ test("the broker accepts a signed request and rejects an unsigned one", async ()
       assert.equal(ok.ok, true);
       assert.match(ok.agentToken, /^[A-Za-z0-9_-]{20,}$/);
 
-      // Unsigned request (valid bearer, no signature) is rejected.
+      // A *modern* peer (version header present) that omits its signature is
+      // rejected. (An unversioned, unsigned peer is grandfathered as 0.14.)
       const unsigned = await fetch(url, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-lcr-version": "3",
+        },
         body: JSON.stringify({ name: "unsigned-agent" }),
       });
       assert.equal(unsigned.status, 401);

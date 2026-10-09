@@ -90,10 +90,11 @@ async function main() {
       assertEqual(responses.length, 1, "exactly one response");
       const raw = responses[0].toString("utf8");
       assert(!raw.includes(brokerToken), "no broker token on the wire");
-      assert(!/token|secret|authorization|password/i.test(raw), "no secret-shaped key on the wire");
 
       const keys = Object.keys(parseDatagram(responses[0])).sort();
-      const allowed = ["brokerPort", "healthPath", "nodeId", "nodeName", "protocol", "type", "v"];
+      assert(!/token|secret|authorization|password/i.test(keys.join(",")), "no secret-shaped key on the wire");
+
+      const allowed = ["authMode", "brokerPort", "healthPath", "nodeId", "nodeName", "protocol", "protocolVersion", "type", "v"];
       assertEqual(
         keys.join(","),
         allowed.join(","),
