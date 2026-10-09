@@ -6,6 +6,8 @@ const { createAgentConnection } = require("../lib/agent");
 const { scanBrokers } = require("../lib/scan");
 const { generateToken } = require("../lib/auth");
 const { subnetHostAddresses } = require("../lib/addr");
+const { createServer } = require("../lib/server");
+const { runRemote } = require("../lib/client");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -108,6 +110,8 @@ test("token mode rejects a modern peer that omits its signature", async () => {
 
 test("a tokenless agent registers with a none-mode broker", async () => {
   const server = createBroker({ authMode: "none" });
+  const previousToken = process.env.LCR_TOKEN;
+  process.env.LCR_TOKEN = generateToken();
   try {
     const port = await listen(server);
     const connection = createAgentConnection({
@@ -129,6 +133,23 @@ test("a tokenless agent registers with a none-mode broker", async () => {
     } finally {
       connection.stop();
     }
+  } finally {
+    if (previousToken == null) delete process.env.LCR_TOKEN;
+    else process.env.LCR_TOKEN = previousToken;
+    await close(server);
+  }
+});
+
+test("a tokenless direct client runs against a none-mode server", async () => {
+  const server = createServer({ authMode: "none" });
+  try {
+    const port = await listen(server);
+    const result = await runRemote({
+      url: `http://127.0.0.1:${port}`,
+      command: [process.execPath, "--version"],
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.stdout, /^v\d+\./);
   } finally {
     await close(server);
   }

@@ -166,6 +166,10 @@ function authToken(options, config) {
   return token;
 }
 
+function optionalAuthToken(options, config) {
+  return options.token || process.env.LCR_TOKEN || config.token || meshBroker(config).token || "";
+}
+
 const PUBLIC_HTTP_WARNING = [
   "!! Plain HTTP over a public network enables credential interception and",
   "!! remote-command interception: anyone on the path can read the broker token",
@@ -203,18 +207,29 @@ function reciprocalSetupHint(view, peerName) {
 }
 
 async function brokerPost(options, config, route, payload) {
+  const token = await brokerAuthToken(options, config);
   return signedFetchJson(new URL(route, resolvedUrl(options, config)).toString(), {
     method: "POST",
-    token: authToken(options, config),
+    token,
     body: payload,
   });
 }
 
 async function brokerGet(options, config, route) {
+  const token = await brokerAuthToken(options, config);
   return signedFetchJson(new URL(route, resolvedUrl(options, config)).toString(), {
     method: "GET",
-    token: authToken(options, config),
+    token,
   });
+}
+
+async function brokerAuthToken(options, config) {
+  const token = optionalAuthToken(options, config);
+  const url = resolvedUrl(options, config);
+  const probe = await signedFetchJson(new URL("/broker", url).toString(), { timeoutMs: 1500 });
+  if (probe.authMode === "none") return "";
+  if (token) return token;
+  throw new Error("Missing token. Pass --token, run lcr-cli setup, or set LCR_TOKEN.");
 }
 
 async function streamBrokerJob(options, config, jobId) {
@@ -923,7 +938,7 @@ async function main() {
       const found = await findBroker(options, config);
       if (!found) throw new Error("No broker found on the LAN. Start one with: lcr-cli broker --trust-lan");
       url = found.url;
-      token = found.authMode === "none" ? options.token || process.env.LCR_TOKEN || "" : authToken(options, config);
+      token = found.authMode === "none" ? "" : authToken(options, config);
       console.log(`[lcr] discovered broker at ${url} (authMode ${found.authMode})`);
     } else {
       token = authToken(options, config);
