@@ -2,6 +2,35 @@
 
 All notable changes to LAN Command Runner are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--help` no longer starts a service.** `--help` (and `-h`) on any
+  subcommand prints usage and exits 0. Before this, `lcr-cli agent --help`
+  silently ran a real agent: it registered on the broker and kept polling,
+  so an operator who only wanted the usage text ended up with a second agent
+  process competing for the same job queue. A `-h` after `--` still belongs to
+  the remote command.
+- **One agent process per broker and agent id.** A second `lcr-cli agent` for
+  the same broker url and agent id now refuses to start with an actionable
+  message instead of joining the first one's queue. Two agents share a single
+  broker-side queue, so the one that loses the race takes a job the other never
+  sees, and the broker reports that job as `running` forever — the visible
+  symptom is "the agent fetches nothing" while `lcr-cli jobs` shows a job that
+  never ends. `--allow-multiple-agents` (or `LCR_ALLOW_MULTIPLE_AGENTS=1`) is
+  the explicit override, and the self-update spawn uses it so the replacement
+  agent can start while the old one exits.
+- **Actionable, deduplicated connection errors.** A reply that arrives without
+  a response signature now names the peer and the fix instead of repeating
+  `Response signature verification failed: Missing response signature.`
+  forever; one real install had 64,977 identical lines. The agent logs a new
+  message immediately and then only every hundredth repeat.
+- **`lcr-cli agent --url` works against a `--trust-lan` broker.** A tokenless
+  start no longer fails with `Missing token` when the broker advertises
+  `authMode: none`; a reachable broker that does want a token still fails
+  clearly, and an unreachable broker keeps the old wait-and-retry behavior.
+
 ## [0.15.0] — 2026-10-07
 
 ### Security
