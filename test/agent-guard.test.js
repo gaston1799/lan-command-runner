@@ -6,7 +6,7 @@ const path = require("node:path");
 const { createBroker } = require("../lib/broker");
 const { generateToken } = require("../lib/auth");
 const { describeVerificationFailure, signedFetchJson } = require("../lib/transport");
-const { acquireInstanceLock, pidIsAlive } = require("../lib/instance-lock");
+const { acquireInstanceLock, lockPath, pidIsAlive } = require("../lib/instance-lock");
 const { makeTempDir, removeTempDir, runNode, spawnNode, killChild, waitFor } = require("../scripts/test-helpers");
 
 const CLI = path.join(__dirname, "..", "bin", "lcr-cli.js");
@@ -222,6 +222,117 @@ test("the instance lock ignores a dead holder and refuses a live one", async () 
     assert.equal(takeover.tookOver, true);
     assert.equal(pidIsAlive(999999999), false);
   } finally {
+    if (previous === undefined) delete process.env.LCR_CONFIG;
+    else process.env.LCR_CONFIG = previous;
+    removeTempDir(dir);
+  }
+});
+
+test("one agent per broker even when the url is formatted differently", async () => {
+  const dir = makeTempDir("dup-url");
+  const token = generateToken();
+  const server = createBroker({ token });
+  let first = null;
+  try {
+    const port = await listen(server);
+    const base = `http://127.0.0.1:${port}`;
+    const env = isolatedEnv(dir, { LCR_TOKEN: token });
+
+    first = spawnNode([CLI, "agent", "--url", base, "--name", "urlform", "--id", "urlform"], env);
+    await waitFor(
+      async () => (await listedAgents(base, token)).some((agent) => agent.id === "urlform"),
+      { description: "the first agent to register" }
+    );
+
+    const second = await runNode(
+      [CLI, "agent", "--url", `${base}/`, "--name", "urlform", "--id", "urlform"],
+      env,
+      { timeoutMs: 20000 }
+    );
+    assert.equal(second.timedOut, false, "the equivalent url must be refused, not started");
+    assert.equal(second.code, 1);
+    assert.match(second.stderr, /already running/);
+  } finally {
+    if (first) await killChild(first);
+    await close(server);
+    removeTempDir(dir);
+  }
+});
+
+test("releasing a connection's lock never evicts a newer owner", () => {
+  const dir = makeTempDir("lock-release");
+  const previous = process.env.LCR_CONFIG;
+  try {
+    process.env.LCR_CONFIG = path.join(dir, "config.json");
+    const identity = "http://127.0.0.1:1\nreleasenode";
+
+    const first = acquireInstanceLock({ identity, label: "releasenode" });
+    assert.equal(first.ok, true);
+    const second = acquireInstanceLock({ identity, label: "releasenode" });
+    assert.equal(second.ok, true, "a reconnect in this process retakes the slot");
+
+    assert.equal(first.release(), false, "a superseded handle must not delete the newer record");
+    assert.equal(fs.existsSync(second.path), true);
+
+    assert.equal(second.release(), true, "the owner releases its own record");
+    assert.equal(fs.existsSync(second.path), false);
+
+    const third = acquireInstanceLock({ identity, label: "releasenode" });
+    assert.equal(third.ok, true, "a released slot is immediately usable");
+    third.release();
+  } finally {
+    if (previous === undefined) delete process.env.LCR_CONFIG;
+    else process.env.LCR_CONFIG = previous;
+    removeTempDir(dir);
+  }
+});
+
+test("concurrent takeovers of a dead holder elect exactly one owner", async () => {
+  const dir = makeTempDir("lock-race");
+  const previous = process.env.LCR_CONFIG;
+  const children = [];
+  try {
+    process.env.LCR_CONFIG = path.join(dir, "config.json");
+    const identity = "http://127.0.0.1:1\nracenode";
+    const file = lockPath("agent", identity);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Every racer starts from the same dead record, which is the state left
+    // behind by a force-killed agent.
+    fs.writeFileSync(file, JSON.stringify({ pid: 999999999, label: "ghost" }));
+
+    const modulePath = path.join(__dirname, "..", "lib", "instance-lock.js");
+    const script = `
+      const { acquireInstanceLock } = require(${JSON.stringify(modulePath)});
+      const lock = acquireInstanceLock({ identity: process.argv[1], label: "racenode" });
+      process.stdout.write((lock.ok ? "OK " : "REFUSED ") + process.pid + "\\n");
+      if (lock.ok) setTimeout(() => process.exit(0), 600);
+    `;
+
+    for (let index = 0; index < 5; index += 1) children.push(spawnNode(["-e", script, identity], isolatedEnv(dir)));
+
+    const outputs = await Promise.all(
+      children.map(
+        (child) =>
+          new Promise((resolve) => {
+            let text = "";
+            child.stdout.on("data", (chunk) => {
+              text += chunk.toString("utf8");
+            });
+            child.on("close", () => resolve(text));
+            setTimeout(() => resolve(text), 15000).unref();
+          })
+      )
+    );
+
+    const winners = outputs.filter((text) => text.startsWith("OK "));
+    assert.equal(
+      winners.length,
+      1,
+      `exactly one takeover may win, got ${winners.length}: ${JSON.stringify(outputs)}`
+    );
+    assert.equal(outputs.filter((text) => text.startsWith("REFUSED ")).length, 4);
+  } finally {
+    for (const child of children) await killChild(child);
     if (previous === undefined) delete process.env.LCR_CONFIG;
     else process.env.LCR_CONFIG = previous;
     removeTempDir(dir);
