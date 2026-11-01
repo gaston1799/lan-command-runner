@@ -413,7 +413,10 @@ async function findBrokers(options, config, scanFallback = true) {
       });
     }
   }
-  return mergeBrokerCandidates(candidates.filter((candidate) => isPrivateBrokerUrl(candidate.url)));
+  return mergeBrokerCandidates(
+    candidates.filter((candidate) => isPrivateBrokerUrl(candidate.url)),
+    localAddresses
+  );
 }
 
 async function autoDiscoverAgent(options, config) {

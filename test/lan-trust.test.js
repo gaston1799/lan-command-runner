@@ -159,6 +159,163 @@ test("a tokenless agent registers with a none-mode broker", async () => {
   }
 });
 
+test("a token-bearing agent registers once against a none-mode broker and runs jobs", async () => {
+  // Regression: a saved token made the agent sign its requests, but a
+  // --trust-lan broker cannot sign replies. The agent then rejected every
+  // response ("Missing response signature"), re-registered every two seconds,
+  // and never polled — so accepted jobs stayed queued forever.
+  const events = [];
+  const audit = {
+    write(record) {
+      events.push(record);
+      return true;
+    },
+  };
+  const server = createBroker({ authMode: "none", audit });
+  try {
+    const port = await listen(server);
+    const connection = createAgentConnection({
+      url: `http://127.0.0.1:${port}`,
+      token: "saved-broker-token",
+      name: "token-agent",
+      id: "token-agent-id",
+      audit,
+      log: () => {},
+      logError: () => {},
+    });
+    try {
+      await sleep(2500);
+      const registrations = events.filter((event) => event.event === "agent.register");
+      assert.equal(registrations.length, 1, "the agent registers once instead of looping");
+      assert.equal(connection.agentId, "token-agent-id");
+
+      const submitted = await fetch(`http://127.0.0.1:${port}/agents/token-agent-id/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command: [process.execPath, "--version"], stream: true }),
+      });
+      assert.equal(submitted.status, 202);
+      const { jobId } = await submitted.json();
+
+      let status = "queued";
+      for (let i = 0; i < 60 && status !== "done"; i += 1) {
+        await sleep(100);
+        const listing = await (await fetch(`http://127.0.0.1:${port}/jobs`)).json();
+        const job = listing.jobs.find((entry) => entry.id === jobId);
+        if (job) status = job.status;
+      }
+      assert.equal(status, "done", "the queued job was claimed and finished");
+      assert.ok(
+        events.some((event) => event.event === "job.start"),
+        "the agent started the job"
+      );
+    } finally {
+      await connection.stop();
+    }
+  } finally {
+    await close(server);
+  }
+});
+
+test("re-registering an agent id keeps its queued jobs", async () => {
+  const server = createBroker({ authMode: "none" });
+  try {
+    const port = await listen(server);
+    const register = async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/agent/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "sticky-agent", name: "sticky" }),
+      });
+      return response.json();
+    };
+
+    await register();
+    const submitted = await fetch(`http://127.0.0.1:${port}/agents/sticky-agent/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: [process.execPath, "--version"], stream: true }),
+    });
+    assert.equal(submitted.status, 202);
+    const { jobId } = await submitted.json();
+
+    await register(); // reconnect while the job is still queued
+
+    const poll = await fetch(`http://127.0.0.1:${port}/agent/sticky-agent/poll?timeoutMs=0`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const claimed = await poll.json();
+    assert.equal(claimed.job && claimed.job.id, jobId, "the queued job survived re-registration");
+  } finally {
+    await close(server);
+  }
+});
+
+test("a long-poll from a replaced connection retires without stealing a job", async () => {
+  const server = createBroker({ authMode: "none" });
+  try {
+    const port = await listen(server);
+    const register = async () => {
+      await fetch(`http://127.0.0.1:${port}/agent/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "epoch-agent", name: "epoch" }),
+      });
+    };
+
+    await register();
+    const stalePoll = fetch(`http://127.0.0.1:${port}/agent/epoch-agent/poll?timeoutMs=10000`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    await sleep(100);
+
+    await register(); // rotates the agent record while the poll is parked
+    const retired = await (await stalePoll).json();
+    assert.equal(retired.job, null, "the superseded long-poll returns empty");
+
+    const submitted = await fetch(`http://127.0.0.1:${port}/agents/epoch-agent/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: [process.execPath, "--version"], stream: true }),
+    });
+    const { jobId } = await submitted.json();
+
+    const poll = await fetch(`http://127.0.0.1:${port}/agent/epoch-agent/poll?timeoutMs=0`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const claimed = await poll.json();
+    assert.equal(claimed.job && claimed.job.id, jobId, "the newest connection claims the job");
+  } finally {
+    await close(server);
+  }
+});
+
+test("a none-mode broker signs replies for a caller that signs its requests", async () => {
+  // An agent whose saved config still carries a broker token signs every
+  // request; a --trust-lan broker does not authenticate it but must not answer
+  // unsigned, or that agent rejects the reply and never stops re-registering.
+  const { signedFetchJson } = require("../lib/transport");
+  const server = createBroker({ authMode: "none" });
+  try {
+    const port = await listen(server);
+    const result = await signedFetchJson(`http://127.0.0.1:${port}/agent/register`, {
+      method: "POST",
+      token: generateToken(),
+      body: { name: "legacy-token-agent" },
+    });
+    assert.ok(result.agentId);
+    assert.ok(result.agentToken);
+  } finally {
+    await close(server);
+  }
+});
+
 test("a tokenless direct client runs against a none-mode server", async () => {
   const server = createServer({ authMode: "none" });
   try {
