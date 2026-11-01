@@ -20,7 +20,12 @@ All notable changes to LAN Command Runner are documented here.
   symptom is "the agent fetches nothing" while `lcr-cli jobs` shows a job that
   never ends. `--allow-multiple-agents` (or `LCR_ALLOW_MULTIPLE_AGENTS=1`) is
   the explicit override, and the self-update spawn uses it so the replacement
-  agent can start while the old one exits.
+  agent can start while the old one exits. Taking over a dead holder is
+  serialized, so two agents starting at the same instant cannot both take the
+  slot; the identity ignores URL formatting (`http://host:8765` and
+  `http://host:8765/` are the same broker); and the lock belongs to the
+  connection, so it is released when a connection stops and a superseded
+  connection can never delete its successor's record.
 - **Actionable, deduplicated connection errors.** A reply that arrives without
   a response signature now names the peer and the fix instead of repeating
   `Response signature verification failed: Missing response signature.`
