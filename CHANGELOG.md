@@ -2,10 +2,27 @@
 
 All notable changes to LAN Command Runner are documented here.
 
-## [Unreleased]
+## [0.16.0] — 2026-11-01
 
 ### Fixed
 
+- **Agents no longer loop on `--trust-lan` brokers.** An agent whose saved
+  config still carried a broker token signed every request, but a tokenless
+  broker cannot sign the replies. The client rejected each one as
+  `Missing response signature` and re-registered every two seconds without ever
+  polling, so accepted jobs stayed queued while `/agents` reported the agent
+  online. The agent now asks `/broker` which mode it runs in and signs only when
+  the broker authenticates, and a `--trust-lan` broker echoes a signed reply to
+  a signed caller so 0.15 agents recover after a broker restart too.
+- **A re-registration no longer discards accepted jobs.** Registering the same
+  agent id rebuilt its record with an empty queue, so queued work silently
+  vanished while `lcr-cli jobs` still reported it as `queued`. The record and its
+  queue now survive, and a registration generation retires long-polls from a
+  superseded connection instead of letting them race the new one for the work.
+- **One stable broker address per node.** A broker that advertises several
+  interfaces used to win by UDP reply order, so the auto-discovery watcher tore
+  the connection down and re-registered on every round. Candidates now rank LAN
+  over private VPN over loopback, then same-subnet, then a fixed order.
 - **`--help` no longer starts a service.** `--help` (and `-h`) on any
   subcommand prints usage and exits 0. Before this, `lcr-cli agent --help`
   silently ran a real agent: it registered on the broker and kept polling,
