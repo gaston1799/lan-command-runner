@@ -2,7 +2,7 @@
 
 All notable changes to LAN Command Runner are documented here.
 
-## [Unreleased]
+## [0.16.1] — 2026-11-01
 
 ### Fixed
 
