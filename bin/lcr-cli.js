@@ -627,6 +627,16 @@ async function main() {
   if (!command || command === "-h" || command === "--help") usage(0);
 
   const options = parseArgs(argv);
+
+  // `--help` is parsed as a plain boolean flag, so without this check
+  // `lcr-cli agent --help` silently started a real agent (and registered on the
+  // broker) instead of printing usage. Only flags before `--` count: everything
+  // after it belongs to the remote command. Help is decided before the config
+  // is read, so a broken config can never hide the usage text.
+  const separatorIndex = argv.indexOf("--");
+  const flagArgv = separatorIndex === -1 ? argv : argv.slice(0, separatorIndex);
+  if (options.help === true || flagArgv.includes("-h")) usage(0);
+
   const config = loadConfig();
 
   if (command === "token") {
@@ -1037,7 +1047,24 @@ async function main() {
       token = found.authMode === "none" ? "" : authToken(options, config);
       console.log(`[lcr] discovered broker at ${url} (authMode ${found.authMode})`);
     } else {
-      token = authToken(options, config);
+      // A --trust-lan broker needs no token, so a tokenless `agent --url` is a
+      // supported start, not an error. Only refuse once a reachable broker has
+      // said it wants a token; a broker that is not up yet keeps the old
+      // "wait for it" behavior instead of failing the launch.
+      token = optionalAuthToken(options, config);
+      if (!token) {
+        let authMode = "";
+        try {
+          const probe = await signedFetchJson(new URL("/broker", url).toString(), { timeoutMs: 1500 });
+          authMode = String((probe && probe.authMode) || "");
+        } catch {
+          authMode = "";
+        }
+        if (authMode && authMode !== "none") {
+          throw new Error("Missing token. Pass --token, run lcr-cli setup, or set LCR_TOKEN.");
+        }
+        if (authMode === "none") console.log("[lcr] Broker is in LAN-trust mode; connecting without a token.");
+      }
     }
     await agent({
       url,
@@ -1045,6 +1072,7 @@ async function main() {
       name: resolvedAgentName(options, config),
       id: resolvedAgentId(options, config),
       allowUnauthenticated: !token,
+      allowMultiple: options["allow-multiple-agents"] === true,
     });
     return;
   }
