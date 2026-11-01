@@ -302,10 +302,15 @@ test("concurrent takeovers of a dead holder elect exactly one owner", async () =
 
     const modulePath = path.join(__dirname, "..", "lib", "instance-lock.js");
     const script = `
-      const { acquireInstanceLock } = require(${JSON.stringify(modulePath)});
-      const lock = acquireInstanceLock({ identity: process.argv[1], label: "racenode" });
-      process.stdout.write((lock.ok ? "OK " : "REFUSED ") + process.pid + "\\n");
-      if (lock.ok) setTimeout(() => process.exit(0), 600);
+      try {
+        const { acquireInstanceLock } = require(${JSON.stringify(modulePath)});
+        const lock = acquireInstanceLock({ identity: process.argv[1], label: "racenode" });
+        process.stdout.write((lock.ok ? "OK " : "REFUSED ") + process.pid + "\\n");
+        if (lock.ok) setTimeout(() => process.exit(0), 600);
+      } catch (error) {
+        process.stdout.write("ERROR " + (error && error.message) + "\\n");
+        process.exitCode = 1;
+      }
     `;
 
     for (let index = 0; index < 5; index += 1) children.push(spawnNode(["-e", script, identity], isolatedEnv(dir)));
@@ -315,22 +320,27 @@ test("concurrent takeovers of a dead holder elect exactly one owner", async () =
         (child) =>
           new Promise((resolve) => {
             let text = "";
+            let errorText = "";
             child.stdout.on("data", (chunk) => {
               text += chunk.toString("utf8");
             });
-            child.on("close", () => resolve(text));
-            setTimeout(() => resolve(text), 15000).unref();
+            child.stderr.on("data", (chunk) => {
+              errorText += chunk.toString("utf8");
+            });
+            child.on("close", () => resolve({ text, errorText }));
+            setTimeout(() => resolve({ text, errorText }), 15000).unref();
           })
       )
     );
 
-    const winners = outputs.filter((text) => text.startsWith("OK "));
+    const verdicts = outputs.map((entry) => entry.text);
+    const winners = verdicts.filter((text) => text.startsWith("OK "));
     assert.equal(
       winners.length,
       1,
       `exactly one takeover may win, got ${winners.length}: ${JSON.stringify(outputs)}`
     );
-    assert.equal(outputs.filter((text) => text.startsWith("REFUSED ")).length, 4);
+    assert.equal(verdicts.filter((text) => text.startsWith("REFUSED ")).length, 4, JSON.stringify(outputs));
   } finally {
     for (const child of children) await killChild(child);
     if (previous === undefined) delete process.env.LCR_CONFIG;
