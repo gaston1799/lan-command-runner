@@ -2,6 +2,18 @@
 
 All notable changes to LAN Command Runner are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Queued jobs wake an open long-poll again.** The poll waiter queue was not
+  cleaned up when a poll expired on its own, so it filled with settled closures
+  and each `enqueueJob` woke a dead one instead of the live poll. Jobs were then
+  delivered only when the live poll timed out: measured on a real install as
+  `startedAt - createdAt` of 11.5-24.8 s with a ~100 ms command, after the first
+  job was fast. Every job now wakes the poll that is actually waiting
+  (`lib/broker.js`, regression test in `test/poll-wakeup.test.js`).
+
 ## [0.16.0] — 2026-11-01
 
 ### Fixed
